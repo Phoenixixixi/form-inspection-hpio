@@ -1,0 +1,481 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model alerts {
+  id           String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  station_id   String     @db.Uuid
+  train_set_id String     @db.Uuid
+  severity     String
+  message      String
+  resolved_at  DateTime?  @db.Timestamptz(6)
+  created_at   DateTime   @default(now()) @db.Timestamptz(6)
+  stations     stations   @relation(fields: [station_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  train_sets   train_sets @relation(fields: [train_set_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([resolved_at], map: "idx_alerts_resolved")
+  @@index([severity], map: "idx_alerts_severity")
+}
+
+model audit_logs {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id       String
+  user_email    String?
+  action        String
+  entity_type   String
+  entity_id     String
+  payload       Json     @default("{}")
+  created_at    DateTime @default(now()) @db.Timestamptz(6)
+  status        String?  @default("SUCCESS") @db.VarChar(20)
+  ip_address    String?  @db.VarChar(50)
+  method        String?  @db.VarChar(10)
+  url           String?
+  error_message String?
+  duration_ms   Int?
+
+  @@index([entity_type, entity_id], map: "idx_audit_entity")
+  @@index([user_id], map: "idx_audit_user")
+}
+
+model cache {
+  key        String @id @db.VarChar(255)
+  value      String
+  expiration Int
+}
+
+model cache_locks {
+  key        String @id @db.VarChar(255)
+  owner      String @db.VarChar(255)
+  expiration Int
+}
+
+model chat_memory {
+  id         Int    @id @default(autoincrement())
+  session_id String
+  message    Json
+}
+
+model device_components {
+  id                BigInt           @id @default(autoincrement())
+  station_device_id BigInt
+  name              String           @db.VarChar(255)
+  condition         String           @db.VarChar(255)
+  notes             String?
+  created_at        DateTime?        @db.Timestamp(0)
+  updated_at        DateTime?        @db.Timestamp(0)
+  stations_devices  stations_devices @relation(fields: [station_device_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "device_components_station_device_id_foreign")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model devices {
+  id            BigInt    @id @default(autoincrement())
+  device_id     BigInt
+  device_name   String    @db.VarChar(255)
+  station_code  String    @db.VarChar(255)
+  status        String    @db.VarChar(255)
+  devices       devices   @relation("devicesTodevices", fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "devices_device_id_foreign")
+  other_devices devices[] @relation("devicesTodevices")
+}
+
+model employees {
+  id           String    @id @db.VarChar(10)
+  number       Int       @default(autoincrement())
+  name         String    @db.VarChar(100)
+  station      String?   @db.VarChar(50)
+  position     String?   @db.VarChar(50)
+  phone_number String?   @db.VarChar(15)
+  created_at   DateTime? @default(now()) @db.Timestamp(6)
+}
+
+model employees_number {
+  id           String    @id @db.VarChar(10)
+  number       Int       @default(autoincrement())
+  name         String    @db.VarChar(100)
+  station      String?   @db.VarChar(50)
+  position     String?   @db.VarChar(50)
+  phone_number String?   @db.VarChar(15)
+  created_at   DateTime? @default(now()) @db.Timestamp(6)
+}
+
+model failed_jobs {
+  id         BigInt   @id @default(autoincrement())
+  uuid       String   @unique(map: "failed_jobs_uuid_unique") @db.VarChar(255)
+  connection String
+  queue      String
+  payload    String
+  exception  String
+  failed_at  DateTime @default(now()) @db.Timestamp(0)
+}
+
+model form_report {
+  id           BigInt    @id @default(autoincrement())
+  nama_teknisi String    @db.VarChar(255)
+  created_at   DateTime? @db.Timestamp(0)
+  updated_at   DateTime? @db.Timestamp(0)
+  time_report  DateTime  @db.Date
+  location     String    @db.VarChar(255)
+  description  String
+  start_time   DateTime  @db.Time(0)
+  end_time     DateTime  @db.Time(0)
+  evidence     String?   @db.VarChar(255)
+  stations     stations  @relation(fields: [location], references: [code], onDelete: Cascade, onUpdate: NoAction, map: "form_report_location_foreign")
+}
+
+model hpio {
+  id                   Int     @id @default(autoincrement())
+  session_id           String
+  message              Json
+  waktu_respon_teknisi String? @db.VarChar(255)
+}
+
+model hpio_chat_history {
+  id         Int    @id @default(autoincrement())
+  session_id String @db.VarChar(255)
+  message    Json
+}
+
+model incident_attachments {
+  id              String    @id @db.Uuid
+  incident_id     String    @db.Uuid
+  stage           String    @db.VarChar(30)
+  source          String    @default("dashboard_upload") @db.VarChar(30)
+  file_name       String    @db.VarChar(255)
+  file_path       String
+  file_url        String
+  file_size_bytes BigInt?
+  mime_type       String?   @db.VarChar(100)
+  caption         String?
+  uploaded_by     String?   @db.VarChar(150)
+  waha_message_id String?   @db.VarChar(100)
+  created_at      DateTime? @db.Timestamp(0)
+  updated_at      DateTime? @db.Timestamp(0)
+
+  @@index([incident_id, stage], map: "incident_attachments_incident_id_stage_index")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model incidents {
+  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nomor_tiket           String    @unique
+  tanggal_lapor         DateTime  @db.Date
+  nama_pelapor          String
+  nama_penerima_laporan String
+  stasiun               String
+  kategori_aset         String
+  deskripsi_masalah     String
+  prioritas             String
+  status                String    @default("Open")
+  nama_teknisi          String?
+  waktu_melapor         DateTime  @db.Timestamptz(6)
+  waktu_respon          DateTime? @db.Timestamptz(6)
+  waktu_selesai         DateTime? @db.Timestamptz(6)
+  response_time         String?   @default("00:00")
+  solving_time          String?   @default("00:00")
+  wr_doc_no             String?
+  status_eskalasi       String?
+  bulan                 String
+  merged_doc_id         String    @default("")
+  merged_doc_url        String    @default("")
+  created_at            DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime  @default(now()) @db.Timestamptz(6)
+  reported_by_phone     String?   @db.VarChar(30)
+  resolution_notes      String?
+  root_cause            String?
+
+  @@index([bulan], map: "idx_incidents_bulan")
+  @@index([created_at(sort: Desc)], map: "idx_incidents_created_at")
+  @@index([kategori_aset], map: "idx_incidents_kategori")
+  @@index([prioritas], map: "idx_incidents_prioritas")
+  @@index([stasiun], map: "idx_incidents_stasiun")
+  @@index([status], map: "idx_incidents_status")
+  @@index([tanggal_lapor], map: "idx_incidents_tanggal")
+}
+
+model job_batches {
+  id             String  @id @db.VarChar(255)
+  name           String  @db.VarChar(255)
+  total_jobs     Int
+  pending_jobs   Int
+  failed_jobs    Int
+  failed_job_ids String
+  options        String?
+  cancelled_at   Int?
+  created_at     Int
+  finished_at    Int?
+}
+
+model jobs {
+  id           BigInt @id @default(autoincrement())
+  queue        String @db.VarChar(255)
+  payload      String
+  attempts     Int    @db.SmallInt
+  reserved_at  Int?
+  available_at Int
+  created_at   Int
+
+  @@index([queue], map: "jobs_queue_index")
+}
+
+model laporan_hpio {
+  idNumber              String  @id @db.VarChar(255)
+  timestamp             String? @db.VarChar(255)
+  nomor_tiket           String? @db.VarChar(255)
+  tanggal_lapor         String? @db.VarChar(255)
+  nama_pelapor          String? @db.VarChar(255)
+  nama_penerima_laporan String? @db.VarChar(255)
+  stasiun_lokasi        String? @db.VarChar(255)
+  kategori_aset         String? @db.VarChar(255)
+  equipment             String? @db.VarChar(255)
+  deskripsi_masalah     String?
+  skala_prioritas       String? @db.VarChar(50)
+  status_laporan        String? @db.VarChar(50)
+  nama_teknisi          String? @db.VarChar(255)
+  waktu_melapor         String? @db.VarChar(255)
+  waktu_respon_teknisi  String? @db.VarChar(255)
+  waktu_selesai         String? @db.VarChar(255)
+  respon_time           String? @db.VarChar(255)
+  solving_time          String? @db.VarChar(255)
+  wr_doc_nomor          String? @db.VarChar(255)
+  status_eskalasi       String? @db.VarChar(50)
+  bulan                 String? @db.VarChar(50)
+}
+
+model laravel_migrations {
+  id        Int    @id @default(autoincrement())
+  migration String @db.VarChar(255)
+  batch     Int
+}
+
+model maintenance_items {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  order_id           String             @db.Uuid
+  component          String
+  description        String
+  action_taken       String             @default("")
+  technician_id      String?            @db.Uuid
+  created_at         DateTime           @default(now()) @db.Timestamptz(6)
+  maintenance_orders maintenance_orders @relation(fields: [order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  technicians        technicians?       @relation(fields: [technician_id], references: [id], onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model maintenance_orders {
+  id                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  train_set_id      String              @db.Uuid
+  station_id        String              @db.Uuid
+  type              String
+  priority          String
+  status            String              @default("pending")
+  scheduled_at      DateTime            @db.Timestamptz(6)
+  completed_at      DateTime?           @db.Timestamptz(6)
+  created_by        String
+  created_at        DateTime            @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime            @default(now()) @db.Timestamptz(6)
+  maintenance_items maintenance_items[]
+  stations          stations            @relation(fields: [station_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  train_sets        train_sets          @relation(fields: [train_set_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([status], map: "idx_maintenance_status")
+}
+
+/// We could not retrieve columns for the underlying table. Either it has none or you are missing rights to see them. Please check your privileges.
+// model migrations {
+// }
+
+model migrations_test {
+  id Int @id @default(autoincrement())
+}
+
+model password_reset_tokens {
+  email      String    @id @db.VarChar(255)
+  token      String    @db.VarChar(255)
+  created_at DateTime? @db.Timestamp(0)
+}
+
+model roles {
+  id          String    @id @db.VarChar(50)
+  name        String    @db.VarChar(100)
+  label       String    @db.VarChar(150)
+  description String?
+  permissions Json?     @db.Json
+  created_at  DateTime? @db.Timestamp(0)
+  updated_at  DateTime? @db.Timestamp(0)
+}
+
+model sessions {
+  id            String  @id @db.VarChar(255)
+  user_id       BigInt?
+  ip_address    String? @db.VarChar(45)
+  user_agent    String?
+  payload       String
+  last_activity Int
+
+  @@index([last_activity], map: "sessions_last_activity_index")
+  @@index([user_id], map: "sessions_user_id_index")
+}
+
+model shift_configs {
+  id         BigInt    @id @default(autoincrement())
+  shift_name String    @unique(map: "shift_configs_shift_name_unique") @db.VarChar(255)
+  start_time String    @db.VarChar(255)
+  end_time   String    @db.VarChar(255)
+  created_at DateTime? @db.Timestamp(0)
+  updated_at DateTime? @db.Timestamp(0)
+}
+
+model shift_schedules {
+  id            BigInt    @id @default(autoincrement())
+  employee_name String    @db.VarChar(255)
+  nip           String?   @db.VarChar(255)
+  no_hp         String?   @db.VarChar(255)
+  month         String    @db.VarChar(255)
+  shifts        Json
+  sort_order    Int       @default(0)
+  created_at    DateTime? @db.Timestamp(0)
+  updated_at    DateTime? @db.Timestamp(0)
+}
+
+model staff_contacts {
+  id           String    @id @db.Uuid
+  full_name    String    @db.VarChar(150)
+  phone_number String    @unique(map: "staff_contacts_phone_number_unique") @db.VarChar(30)
+  station_name String    @db.VarChar(100)
+  station_code String    @db.VarChar(10)
+  role_name    String    @default("SPV Stasiun") @db.VarChar(100)
+  department   String    @default("Operations & Facility") @db.VarChar(100)
+  is_active    Boolean   @default(true)
+  created_at   DateTime? @db.Timestamp(0)
+  updated_at   DateTime? @db.Timestamp(0)
+}
+
+model stations {
+  id                 String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name               String
+  code               String               @unique
+  location           String
+  created_at         DateTime             @default(now()) @db.Timestamptz(6)
+  alerts             alerts[]
+  form_report        form_report[]
+  maintenance_orders maintenance_orders[]
+  stations_devices   stations_devices[]
+  technicians        technicians[]
+  rooms              rooms[]
+  station_items      station_items[]
+  inspections        inspections[]
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model stations_devices {
+  id                BigInt              @id @default(autoincrement())
+  device_id         String              @db.VarChar(255)
+  device_name       String              @db.VarChar(255)
+  station_code      String              @db.VarChar(255)
+  status            String              @db.VarChar(255)
+  created_at        DateTime?           @db.Timestamp(0)
+  updated_at        DateTime?           @db.Timestamp(0)
+  device_components device_components[]
+  stations          stations            @relation(fields: [station_code], references: [code], onDelete: Cascade, onUpdate: NoAction, map: "stations_devices_station_code_foreign")
+}
+
+model technicians {
+  id                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id           String
+  name              String
+  specialization    String
+  station_id        String?             @db.Uuid
+  created_at        DateTime            @default(now()) @db.Timestamptz(6)
+  maintenance_items maintenance_items[]
+  stations          stations?           @relation(fields: [station_id], references: [id], onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model train_sets {
+  id                 String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  train_number       String               @unique
+  model              String
+  status             String               @default("operational")
+  created_at         DateTime             @default(now()) @db.Timestamptz(6)
+  alerts             alerts[]
+  maintenance_orders maintenance_orders[]
+}
+
+model users {
+  id                BigInt    @id @default(autoincrement())
+  name              String    @db.VarChar(255)
+  email             String    @unique(map: "users_email_unique") @db.VarChar(255)
+  email_verified_at DateTime? @db.Timestamp(0)
+  password          String    @db.VarChar(255)
+  remember_token    String?   @db.VarChar(100)
+  created_at        DateTime? @db.Timestamp(0)
+  updated_at        DateTime? @db.Timestamp(0)
+  phone_number      String?   @db.VarChar(30)
+  station_id        String?   @db.Uuid
+  role_id           String?   @default("spv_station") @db.VarChar(50)
+  is_active         Boolean   @default(true)
+}
+
+model rooms {
+  id          String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  station_id  String        @db.Uuid
+  name        String        @db.VarChar(100)
+  location    String?       @db.VarChar(255)
+  is_active   Boolean       @default(true)
+  created_at  DateTime      @default(now()) @db.Timestamptz(6)
+  station     stations      @relation(fields: [station_id], references: [id], onDelete: Cascade)
+  items       items[]
+  inspections inspections[]
+}
+
+model items {
+  id               String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  room_id          String             @db.Uuid
+  name             String             @db.VarChar(100)
+  is_active        Boolean            @default(true)
+  created_at       DateTime           @default(now()) @db.Timestamptz(6)
+  room             rooms              @relation(fields: [room_id], references: [id], onDelete: Cascade)
+  inspection_items inspection_items[]
+}
+
+model station_items {
+  id               String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  station_id       String             @db.Uuid
+  name             String             @db.VarChar(100)
+  is_active        Boolean            @default(true)
+  created_at       DateTime           @default(now()) @db.Timestamptz(6)
+  station          stations           @relation(fields: [station_id], references: [id], onDelete: Cascade)
+  inspection_items inspection_items[]
+}
+
+model inspections {
+  id               String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  station_id       String             @db.Uuid
+  room_id          String?            @db.Uuid
+  user_id          String             @db.VarChar(255)
+  temperature      Decimal?           @db.Decimal(5, 2)
+  humidity         Decimal?           @db.Decimal(5, 2)
+  notes            String?            @db.Text
+  inspected_at     DateTime           @default(now()) @db.Timestamptz(6)
+  created_at       DateTime           @default(now()) @db.Timestamptz(6)
+  station          stations           @relation(fields: [station_id], references: [id], onDelete: Cascade)
+  room             rooms?             @relation(fields: [room_id], references: [id], onDelete: Cascade)
+  inspection_items inspection_items[]
+}
+
+model inspection_items {
+  id              String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  inspection_id   String         @db.Uuid
+  item_id         String?        @db.Uuid
+  station_item_id String?        @db.Uuid
+  status          String         @db.VarChar(20)
+  notes           String?        @db.Text
+  inspection      inspections    @relation(fields: [inspection_id], references: [id], onDelete: Cascade)
+  item            items?         @relation(fields: [item_id], references: [id], onDelete: Cascade)
+  station_item    station_items? @relation(fields: [station_item_id], references: [id], onDelete: Cascade)
+}
+
