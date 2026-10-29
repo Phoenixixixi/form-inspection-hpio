@@ -12,13 +12,16 @@ import {
   Thermometer,
   Droplets,
   ArrowRight,
-  RefreshCcw,
   Send,
-  Sparkles,
   ClipboardCheck,
-  ChevronDown,
   Layers,
   Settings,
+  Clock,
+  Lock,
+  Edit3,
+  QrCode,
+  Sun,
+  Sunset,
 } from 'lucide-react';
 import QrCameraScanner from '@/components/QrCameraScanner';
 import { QrInspectionPayload } from '@/lib/qr-security';
@@ -55,15 +58,14 @@ interface Technician {
 interface CompletedRoomInspection {
   room_id: string;
   room_name: string;
+  session: 'PAGI' | 'SIANG';
   has_climate: boolean;
   temperature?: number | null;
   humidity?: number | null;
-  room_notes?: string;
   items: Array<{
     item_id: string;
     item_name: string;
     status: 'NORMAL' | 'ABNORMAL';
-    notes?: string;
   }>;
 }
 
@@ -77,22 +79,27 @@ export default function TechnicianApp() {
   const [selectedTechnicianName, setSelectedTechnicianName] = useState('');
   const [selectedStationId, setSelectedStationId] = useState('');
   const [isSessionStarted, setIsSessionStarted] = useState(false);
+  const [activeSession, setActiveSession] = useState<'PAGI' | 'SIANG'>('PAGI');
+
+  useEffect(() => {
+    if (new Date().getHours() >= 12) {
+      setActiveSession('SIANG');
+    }
+  }, []);
 
   // Step 2: Inspection process state
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [currentInspectingRoom, setCurrentInspectingRoom] = useState<Room | null>(null);
 
-  // Step 3: Room Form State
+  // Step 3: Room Form State (Suhu, Kelembapan, Item Statuses: ONLY Normal/Abnormal without individual notes)
   const [tempInput, setTempInput] = useState<string>('21.5');
   const [humInput, setHumInput] = useState<string>('55.0');
-  const [roomNotes, setRoomNotes] = useState<string>('');
-  const [itemStatuses, setItemStatuses] = useState<
-    Record<string, { status: 'NORMAL' | 'ABNORMAL'; notes: string }>
-  >({});
+  const [itemStatuses, setItemStatuses] = useState<Record<string, 'NORMAL' | 'ABNORMAL'>>({});
 
-  // Step 4: Station Aggregation State
+  // Step 4: Station Aggregation State (Single Catatan Utama for the station)
   const [completedRooms, setCompletedRooms] = useState<CompletedRoomInspection[]>([]);
   const [stationNotes, setStationNotes] = useState<string>('');
+  const [isStationSubmitted, setIsStationSubmitted] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submissionSuccess, setSubmissionSuccess] = useState<any | null>(null);
 
@@ -132,13 +139,73 @@ export default function TechnicianApp() {
     setTimeout(() => setAlertMessage(null), 4000);
   };
 
+  // Sinkronisasi otomatis data ruangan yang sudah diinspeksi hari ini (DB + LocalStorage)
+  const loadStationProgress = async (stationId: string) => {
+    const todayKey = new Date().toISOString().split('T')[0];
+    let localDrafts: CompletedRoomInspection[] = [];
+
+    try {
+      const raw = localStorage.getItem(`hpio_progress_${stationId}_${todayKey}`);
+      if (raw) {
+        localDrafts = JSON.parse(raw);
+      }
+    } catch {}
+
+    try {
+      const res = await fetch(`/api/inspections/history?station_id=${stationId}&today_only=true`);
+      const data = await res.json();
+      if (data.success && data.inspections) {
+        const dbCompleted: CompletedRoomInspection[] = data.inspections
+          .filter((insp: any) => insp.room_id)
+          .map((insp: any) => ({
+            room_id: insp.room_id,
+            room_name: insp.room?.name || 'Ruangan',
+            session: (insp.session as 'PAGI' | 'SIANG') || 'PAGI',
+            has_climate: insp.temperature !== null,
+            temperature: insp.temperature ? Number(insp.temperature) : null,
+            humidity: insp.humidity ? Number(insp.humidity) : null,
+            items: (insp.inspection_items || []).map((itm: any) => ({
+              item_id: itm.item_id || '',
+              item_name: itm.item?.name || 'Item',
+              status: itm.status || 'NORMAL',
+            })),
+          }));
+
+        const map = new Map<string, CompletedRoomInspection>();
+        dbCompleted.forEach((item) => map.set(`${item.room_id}_${item.session}`, item));
+        localDrafts.forEach((item) => map.set(`${item.room_id}_${item.session || 'PAGI'}`, item));
+
+        const merged = Array.from(map.values());
+        setCompletedRooms(merged);
+        localStorage.setItem(`hpio_progress_${stationId}_${todayKey}`, JSON.stringify(merged));
+
+        // Jika sudah ada data inspeksi hari ini, isikan catatan utama yang tersimpan
+        const existingNote = data.inspections.find(
+          (i: any) => i.notes && i.notes.trim().length > 0
+        )?.notes;
+        if (existingNote) {
+          setStationNotes(existingNote);
+          setIsStationSubmitted(true);
+        }
+        return;
+      }
+    } catch (err) {
+      console.error('Failed to sync today inspection history', err);
+    }
+
+    if (localDrafts.length > 0) {
+      setCompletedRooms(localDrafts);
+    }
+  };
+
   // Start Session
-  const handleStartSession = (e: React.FormEvent) => {
+  const handleStartSession = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedTechnicianName.trim() || !selectedStationId) {
       showAlert('error', 'Pilih nama teknisi dan stasiun terlebih dahulu!');
       return;
     }
+    await loadStationProgress(selectedStationId);
     setIsSessionStarted(true);
   };
 
@@ -159,17 +226,42 @@ export default function TechnicianApp() {
       return;
     }
 
+    // CEK APAKAH RUANGAN INI SUDAH DIINSPEKSI UNTUK SESI AKTIF (PAGI / SIANG)?
+    const isAlreadyCompleted = completedRooms.some(
+      (cr) => cr.room_id === matchedRoom.id && cr.session === activeSession
+    );
+    if (isAlreadyCompleted) {
+      showAlert(
+        'error',
+        `🔒 RUANGAN TERKUNCI: "${matchedRoom.name}" sudah berstatus SELESAI untuk Sesi ${activeSession}. Silakan scan ruangan lainnya yang belum diisi.`
+      );
+      return;
+    }
+
+    // Jika ruangan beda dan belum diisi di sesi ini -> Buka form inspeksi
     startInspectingRoom(matchedRoom);
   };
 
-  // Manual fallback selection or QR trigger
+  // Memulai inspeksi ruangan (melalui QR scan)
   const startInspectingRoom = (room: Room) => {
+    // Kunci ruangan jika sudah pernah diinspeksi untuk sesi aktif
+    const isAlreadyCompleted = completedRooms.some(
+      (cr) => cr.room_id === room.id && cr.session === activeSession
+    );
+    if (isAlreadyCompleted) {
+      showAlert(
+        'error',
+        `🔒 RUANGAN TERKUNCI: Ruangan "${room.name}" sudah berstatus SELESAI untuk Sesi ${activeSession}.`
+      );
+      return;
+    }
+
     setCurrentInspectingRoom(room);
 
-    // Initialize item checklist
-    const initialItemMap: Record<string, { status: 'NORMAL' | 'ABNORMAL'; notes: string }> = {};
+    // Initialize item checklist with default NORMAL
+    const initialItemMap: Record<string, 'NORMAL' | 'ABNORMAL'> = {};
     (room.items || []).forEach((itm) => {
-      initialItemMap[itm.id] = { status: 'NORMAL', notes: '' };
+      initialItemMap[itm.id] = 'NORMAL';
     });
     setItemStatuses(initialItemMap);
 
@@ -182,27 +274,13 @@ export default function TechnicianApp() {
       setTempInput('');
       setHumInput('');
     }
-    setRoomNotes('');
   };
 
-  // Toggle Item Status
+  // Toggle Item Status (Pure NORMAL or ABNORMAL, no individual notes)
   const toggleItemStatus = (itemId: string, status: 'NORMAL' | 'ABNORMAL') => {
     setItemStatuses((prev) => ({
       ...prev,
-      [itemId]: {
-        ...prev[itemId],
-        status,
-      },
-    }));
-  };
-
-  const updateItemNotes = (itemId: string, notes: string) => {
-    setItemStatuses((prev) => ({
-      ...prev,
-      [itemId]: {
-        ...prev[itemId],
-        notes,
-      },
+      [itemId]: status,
     }));
   };
 
@@ -232,39 +310,60 @@ export default function TechnicianApp() {
     }
 
     const itemsPayload = (currentInspectingRoom.items || []).map((itm) => {
-      const state = itemStatuses[itm.id] || { status: 'NORMAL', notes: '' };
       return {
         item_id: itm.id,
         item_name: itm.name,
-        status: state.status,
-        notes: state.status === 'ABNORMAL' ? state.notes : '',
+        status: itemStatuses[itm.id] || 'NORMAL',
       };
     });
 
     const completed: CompletedRoomInspection = {
       room_id: currentInspectingRoom.id,
       room_name: currentInspectingRoom.name,
+      session: activeSession,
       has_climate: hasClimate,
       temperature: parsedTemp,
       humidity: parsedHum,
-      room_notes: roomNotes.trim() || undefined,
       items: itemsPayload,
     };
 
-    // Filter out previous inspection of same room if re-inspected
-    setCompletedRooms((prev) => [
-      ...prev.filter((r) => r.room_id !== completed.room_id),
+    const updated = [
+      ...completedRooms.filter(
+        (r) => !(r.room_id === completed.room_id && r.session === completed.session)
+      ),
       completed,
-    ]);
+    ];
+    setCompletedRooms(updated);
 
-    showAlert('success', `Inspeksi ruangan "${currentInspectingRoom.name}" berhasil dicatat!`);
+    // Simpan progres ke LocalStorage agar reload/refresh tidak me-reset ke nol
+    if (currentInspectingRoom.station_id) {
+      const todayKey = new Date().toISOString().split('T')[0];
+      try {
+        localStorage.setItem(
+          `hpio_progress_${currentInspectingRoom.station_id}_${todayKey}`,
+          JSON.stringify(updated)
+        );
+      } catch {}
+    }
+
+    showAlert(
+      'success',
+      `✓ STATUS: SELESAI! Inspeksi "${currentInspectingRoom.name}" (${activeSession === 'PAGI' ? 'Sesi Pagi' : 'Sesi Siang'}) berhasil dicatat.`
+    );
     setCurrentInspectingRoom(null);
   };
 
-  // Submit full station inspection
+  // Submit full station inspection for active session (Pagi atau Siang tanpa catatan utama)
   const handleSubmitStationInspection = async () => {
-    if (!currentStation || completedRooms.length === 0) {
-      showAlert('error', 'Minimal harus ada 1 ruangan yang diinspeksi sebelum submit!');
+    if (!currentStation) return;
+    const totalRooms = currentStation.rooms?.length || 0;
+    const sessionCompletedRooms = completedRooms.filter((r) => r.session === activeSession);
+
+    if (totalRooms === 0 || sessionCompletedRooms.length < totalRooms) {
+      showAlert(
+        'error',
+        `Submit sesi hanya dapat dikirim jika seluruh ruangan (${sessionCompletedRooms.length}/${totalRooms}) pada Sesi ${activeSession} sudah selesai diinspeksi!`
+      );
       return;
     }
 
@@ -274,16 +373,18 @@ export default function TechnicianApp() {
       const payload = {
         station_id: currentStation.id,
         technician_name: selectedTechnicianName,
-        station_notes: stationNotes.trim(),
-        room_inspections: completedRooms.map((r) => ({
+        session: activeSession,
+        station_notes: stationNotes.trim() || null,
+        room_inspections: sessionCompletedRooms.map((r) => ({
           room_id: r.room_id,
           temperature: r.temperature,
           humidity: r.humidity,
-          notes: r.room_notes,
+          session: r.session,
+          notes: null,
           items: r.items.map((i) => ({
             item_id: i.item_id,
             status: i.status,
-            notes: i.notes,
+            notes: null,
           })),
         })),
       };
@@ -300,12 +401,61 @@ export default function TechnicianApp() {
           stationName: currentStation.name,
           stationCode: currentStation.code,
           technician: selectedTechnicianName,
-          roomCount: completedRooms.length,
+          session: activeSession,
+          roomCount: sessionCompletedRooms.length,
           savedCount: data.savedCount,
           time: new Date().toLocaleTimeString('id-ID'),
         });
+        await loadStationProgress(currentStation.id);
       } else {
         showAlert('error', data.error || 'Gagal menyimpan hasil inspeksi');
+      }
+    } catch (err: any) {
+      showAlert('error', err.message || 'Terjadi kesalahan sistem');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Simpan / Perbarui Catatan Utama Stasiun (HANYA AKTIF JIKA PAGI & SIANG SUDAH SELESAI)
+  const handleSaveDailyStationNotes = async () => {
+    if (!currentStation) return;
+    const totalRooms = currentStation.rooms?.length || 0;
+    const sessionPagiDone = completedRooms.filter((r) => r.session === 'PAGI').length;
+    const sessionSiangDone = completedRooms.filter((r) => r.session === 'SIANG').length;
+    const isBothDone = totalRooms > 0 && sessionPagiDone >= totalRooms && sessionSiangDone >= totalRooms;
+
+    if (!isBothDone) {
+      showAlert(
+        'error',
+        'Catatan utama stasiun hanya dapat diisi jika inspeksi Sesi Pagi dan Sesi Siang sudah diselesaikan seluruhnya!'
+      );
+      return;
+    }
+
+    const cleanNotes = stationNotes.trim();
+    if (!cleanNotes) {
+      showAlert('error', 'Catatan utama stasiun wajib diisi!');
+      return;
+    }
+
+    try {
+      setIsSubmitting(true);
+      const res = await fetch('/api/inspections/submit', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          station_id: currentStation.id,
+          station_notes: cleanNotes,
+        }),
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        setIsStationSubmitted(true);
+        showAlert('success', '✓ Catatan utama kunjungan stasiun hari ini berhasil disimpan!');
+      } else {
+        showAlert('error', data.error || 'Gagal memperbarui catatan utama');
       }
     } catch (err: any) {
       showAlert('error', err.message || 'Terjadi kesalahan sistem');
@@ -319,6 +469,7 @@ export default function TechnicianApp() {
     setCurrentInspectingRoom(null);
     setCompletedRooms([]);
     setStationNotes('');
+    setIsStationSubmitted(false);
     setSubmissionSuccess(null);
   };
 
@@ -394,20 +545,26 @@ export default function TechnicianApp() {
             </div>
             <div>
               <span className="brutal-badge bg-black text-white text-[10px] mb-1">
-                BERHASIL TERSIMPAN
+                BERHASIL TERSIMPAN • SESI {submissionSuccess.session || 'PAGI'}
               </span>
               <h2 className="text-xl font-black uppercase text-black">
-                Inspeksi Selesai!
+                Inspeksi Sesi {submissionSuccess.session === 'SIANG' ? 'Siang' : 'Pagi'} Selesai!
               </h2>
               <p className="text-xs font-bold text-gray-600 mt-1">
                 Data inspeksi stasiun <b>{submissionSuccess.stationName}</b> telah berhasil dikirim ke server HPIO.
               </p>
             </div>
 
-            <div className="bg-gray-100 border-2 border-black p-3 text-xs text-left space-y-1 font-bold">
+            <div className="bg-gray-100 border-2 border-black p-3 text-xs text-left space-y-1.5 font-bold">
               <div className="flex justify-between">
                 <span className="text-gray-500">Stasiun:</span>
                 <span className="text-black uppercase">[{submissionSuccess.stationCode}] {submissionSuccess.stationName}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Sesi:</span>
+                <span className="text-black font-extrabold">
+                  {submissionSuccess.session === 'SIANG' ? '☀️ Inspeksi Siang' : '🌅 Inspeksi Pagi'}
+                </span>
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-500">Teknisi:</span>
@@ -423,12 +580,33 @@ export default function TechnicianApp() {
               </div>
             </div>
 
-            <button
-              onClick={handleResetSession}
-              className="w-full brutal-btn brutal-btn-primary text-xs py-3 font-black"
-            >
-              Mulai Inspeksi Baru
-            </button>
+            <div className="space-y-2">
+              {submissionSuccess.session === 'PAGI' && (
+                <button
+                  onClick={() => {
+                    setActiveSession('SIANG');
+                    setSubmissionSuccess(null);
+                  }}
+                  className="w-full brutal-btn bg-orange-400 hover:bg-orange-500 text-black text-xs py-3 font-black border-2 border-black flex items-center justify-center gap-1.5 shadow-[2px_2px_0px_#000]"
+                >
+                  <Sunset className="w-4 h-4" />
+                  <span>Lanjut ke Inspeksi Siang ☀️</span>
+                </button>
+              )}
+              <button
+                onClick={() => setSubmissionSuccess(null)}
+                className="w-full brutal-btn bg-yellow-300 hover:bg-yellow-400 text-black text-xs py-3 font-black border-2 border-black flex items-center justify-center gap-1.5"
+              >
+                <Edit3 className="w-4 h-4" />
+                <span>Lihat Ringkasan Ruangan / Edit Catatan</span>
+              </button>
+              <button
+                onClick={handleResetSession}
+                className="w-full brutal-btn brutal-btn-black text-xs py-3 font-black"
+              >
+                Pilih / Pindah ke Stasiun Lain
+              </button>
+            </div>
           </div>
         )}
 
@@ -445,11 +623,12 @@ export default function TechnicianApp() {
                 Identitas Teknisi & Stasiun
               </h2>
               <p className="text-xs font-semibold text-gray-500">
-                Pilih nama teknisi Anda dan stasiun yang dikunjungi.
+                Pilih nama teknisi dan stasiun yang dikunjungi.
               </p>
             </div>
 
             <form onSubmit={handleStartSession} className="space-y-4">
+
               {/* Teknisi */}
               <div>
                 <label className="block text-xs font-black uppercase mb-1 flex items-center gap-1.5">
@@ -460,7 +639,7 @@ export default function TechnicianApp() {
                   <select
                     value={selectedTechnicianName}
                     onChange={(e) => setSelectedTechnicianName(e.target.value)}
-                    className="brutal-input text-sm font-bold"
+                    className="brutal-input text-xs font-bold"
                   >
                     {technicians.map((t) => (
                       <option key={t.id} value={t.name}>
@@ -514,233 +693,530 @@ export default function TechnicianApp() {
         {/* ACTIVE INSPECTION SESSION */}
         {/* ============================================================== */}
         {isSessionStarted && !submissionSuccess && (
-          <div className="space-y-4">
+          <div className="space-y-3.5">
             {/* Active Session Info Bar */}
-            <div className="brutal-card p-3 bg-black text-white flex items-center justify-between">
-              <div>
-                <div className="flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 bg-green-500 rounded-full animate-ping"></span>
-                  <span className="text-[10px] font-black uppercase text-green-400">
-                    Sesi Aktif
-                  </span>
+            <div className="bg-slate-900 text-white border-2 border-black rounded-xl p-3 shadow-[2px_2px_0px_#000] flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-red-600 border border-white flex items-center justify-center font-black text-xs text-white shrink-0">
+                  IT
                 </div>
-                <div className="font-black text-sm uppercase">
-                  {currentStation?.name} [{currentStation?.code}]
-                </div>
-                <div className="text-[11px] text-gray-300 font-semibold">
-                  Teknisi: {selectedTechnicianName}
+                <div>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="font-extrabold text-sm uppercase tracking-wide text-white">
+                      {currentStation?.name}
+                    </span>
+                    <span className="text-[10px] bg-slate-800 text-slate-300 font-bold px-1.5 py-0.5 rounded border border-slate-700">
+                      {currentStation?.code}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-300 font-medium">
+                    Teknisi: <span className="font-semibold text-white">{selectedTechnicianName}</span>
+                  </p>
                 </div>
               </div>
               <button
                 onClick={handleResetSession}
-                className="text-[10px] font-black bg-red-600 text-white px-2 py-1 border border-white hover:bg-white hover:text-black"
+                className="text-xs font-bold text-slate-300 hover:text-white bg-slate-800 border border-slate-700 hover:border-white px-2.5 py-1.5 rounded-lg transition-colors shrink-0"
               >
-                Ganti Sesi
+                Ganti
               </button>
             </div>
 
             {/* ============================================================ */}
             {/* SCREEN A: NOT IN A ROOM -> SHOW QR SCANNER BUTTON & ROOM LIST */}
             {/* ============================================================ */}
-            {!currentInspectingRoom && (
-              <div className="space-y-4">
-                {/* Big QR Scanner Button */}
-                <div className="brutal-card-lg p-5 bg-white border-4 border-black text-center space-y-3">
-                  <div className="w-14 h-14 bg-red-600 border-3 border-black mx-auto flex items-center justify-center text-white">
-                    <Camera className="w-8 h-8" />
-                  </div>
-                  <div>
-                    <span className="brutal-badge bg-black text-white text-[10px] mb-1">
-                      SCAN STIKER FISIK
-                    </span>
-                    <h2 className="text-base font-black uppercase text-black">
-                      Scan QR Ruangan / Datacenter
-                    </h2>
-                    <p className="text-xs font-semibold text-gray-600 mt-0.5">
-                      Arahkan kamera ke stiker QR terpasang di ruangan stasiun {currentStation?.name}.
-                    </p>
-                  </div>
+            {!currentInspectingRoom && (() => {
+              const allStationRooms = currentStation?.rooms || [];
+              const pagiRooms = completedRooms.filter((cr) => cr.session === 'PAGI');
+              const siangRooms = completedRooms.filter((cr) => cr.session === 'SIANG');
 
-                  <button
-                    onClick={() => setIsScannerOpen(true)}
-                    className="w-full brutal-btn brutal-btn-primary text-sm py-3.5 font-black flex items-center justify-center gap-2 shadow-[5px_5px_0px_#000]"
-                  >
-                    <Camera className="w-5 h-5" />
-                    <span>Buka Kamera QR Scanner</span>
-                  </button>
+              const activeDoneRooms = activeSession === 'PAGI' ? pagiRooms : siangRooms;
 
-                  <div className="pt-2 border-t-2 border-black flex items-center justify-center gap-1 text-[10px] font-bold text-gray-500">
-                    <ShieldAlert className="w-3.5 h-3.5 text-red-600" />
-                    <span>Anti-Cheat QR: Bukan berupa link URL browser</span>
-                  </div>
-                </div>
+              const uncompletedRooms = allStationRooms.filter(
+                (room) => !activeDoneRooms.some((cr) => cr.room_id === room.id)
+              );
+              const doneRooms = allStationRooms.filter(
+                (room) => activeDoneRooms.some((cr) => cr.room_id === room.id)
+              );
+              const progressPercent = allStationRooms.length > 0
+                ? Math.round((doneRooms.length / allStationRooms.length) * 100)
+                : 0;
 
-                {/* Status Ruangan di Stasiun Ini */}
-                <div className="brutal-card p-4 bg-white border-3 border-black space-y-3">
-                  <div className="flex items-center justify-between border-b-2 border-black pb-2">
-                    <div className="flex items-center gap-1.5">
-                      <Layers className="w-4 h-4 text-red-600" />
-                      <h3 className="font-black text-xs uppercase tracking-wide">
-                        Progres Ruangan ({completedRooms.length} / {currentStation?.rooms?.length || 0})
-                      </h3>
+              const isAllRoomsDoneInCurrentSession =
+                allStationRooms.length > 0 && doneRooms.length === allStationRooms.length;
+
+              return (
+                <div className="space-y-3.5">
+                  {/* Selector Sesi Inspeksi (2x Sehari: Pagi & Siang) */}
+                  <div className="bg-white border-2 border-black rounded-xl p-2.5 shadow-[3px_3px_0px_#000] space-y-2">
+                    <div className="flex items-center justify-between text-xs font-bold text-slate-700 px-1">
+                      <span className="flex items-center gap-1.5">
+                        <Clock className="w-3.5 h-3.5 text-slate-500" />
+                        <span>Sesi Inspeksi Hari Ini (2x Sehari):</span>
+                      </span>
+                      <span className="text-[10px] text-amber-700 font-extrabold bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
+                        Catatan: 1x Per Hari
+                      </span>
                     </div>
-                    <span className="text-[11px] font-black text-red-600">
-                      {completedRooms.length === (currentStation?.rooms?.length || 0) && currentStation?.rooms?.length !== 0
-                        ? 'Semua Selesai'
-                        : 'Belum Lengkap'}
-                    </span>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setActiveSession('PAGI')}
+                        className={`py-2 px-3 rounded-xl border-2 border-black font-black text-xs flex items-center justify-center gap-2 transition-all ${
+                          activeSession === 'PAGI'
+                            ? 'bg-amber-400 text-black shadow-[2px_2px_0px_#000] -translate-y-0.5'
+                            : 'bg-slate-50 hover:bg-slate-100 text-slate-600'
+                        }`}
+                      >
+                        <Sun className="w-4 h-4 text-amber-700" />
+                        <span>Inspeksi Pagi</span>
+                        <span className="text-[10px] bg-black text-white px-1.5 py-0.5 rounded font-mono">
+                          {pagiRooms.length}/{allStationRooms.length}
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setActiveSession('SIANG')}
+                        className={`py-2 px-3 rounded-xl border-2 border-black font-black text-xs flex items-center justify-center gap-2 transition-all ${
+                          activeSession === 'SIANG'
+                            ? 'bg-orange-500 text-white shadow-[2px_2px_0px_#000] -translate-y-0.5'
+                            : 'bg-slate-50 hover:bg-slate-100 text-slate-600'
+                        }`}
+                      >
+                        <Sunset className="w-4 h-4 text-white" />
+                        <span>Inspeksi Siang</span>
+                        <span className="text-[10px] bg-black text-white px-1.5 py-0.5 rounded font-mono">
+                          {siangRooms.length}/{allStationRooms.length}
+                        </span>
+                      </button>
+                    </div>
                   </div>
 
-                  {/* Room Quick List / Fallback Manual Picker */}
-                  <div className="space-y-2">
-                    {currentStation?.rooms && currentStation.rooms.length > 0 ? (
-                      currentStation.rooms.map((room) => {
-                        const isCompleted = completedRooms.some((cr) => cr.room_id === room.id);
-                        const isStationArea = room.name.trim().toLowerCase() === 'station area';
+                  {/* Scanner & Progress Combined Card */}
+                  <div className="bg-white border-2 border-black rounded-xl p-4 shadow-[3px_3px_0px_#000] space-y-3">
+                    <button
+                      onClick={() => setIsScannerOpen(true)}
+                      className="w-full bg-red-600 hover:bg-red-700 text-white border-2 border-black rounded-xl py-3 px-4 shadow-[2px_2px_0px_#000] active:translate-x-[1px] active:translate-y-[1px] font-black text-sm flex items-center justify-center gap-2 transition-transform"
+                    >
+                      <Camera className="w-5 h-5" />
+                      <span>Buka Kamera Scan QR Ruangan (Sesi {activeSession === 'PAGI' ? 'Pagi' : 'Siang'})</span>
+                    </button>
 
-                        return (
-                          <div
-                            key={room.id}
-                            className={`p-3 border-2 border-black flex items-center justify-between text-xs font-black ${
-                              isCompleted ? 'bg-green-100 border-black' : 'bg-gray-50'
-                            }`}
-                          >
-                            <div>
-                              <div className="flex items-center gap-1.5">
-                                {isCompleted ? (
-                                  <CheckCircle2 className="w-4 h-4 text-green-700 shrink-0" />
-                                ) : (
-                                  <span className="w-3 h-3 border border-black bg-white inline-block"></span>
-                                )}
-                                <span className="uppercase text-black">{room.name}</span>
+                    <p className="text-[11px] text-slate-500 font-medium text-center">
+                      Arahkan kamera ke stiker QR fisik yang terpasang di ruangan
+                    </p>
+
+                    {/* Progress Bar */}
+                    <div className="pt-2.5 border-t border-slate-200 space-y-1.5">
+                      <div className="flex items-center justify-between text-xs font-bold">
+                        <span className="text-slate-600">
+                          Status Progres Sesi {activeSession === 'PAGI' ? 'Pagi 🌅' : 'Siang ☀️'}:
+                        </span>
+                        <span className="text-slate-900 font-black">
+                          {doneRooms.length} / {allStationRooms.length} Ruangan ({progressPercent}%)
+                        </span>
+                      </div>
+                      <div className="w-full h-2.5 bg-slate-100 border border-slate-300 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-emerald-500 rounded-full transition-all duration-300"
+                          style={{ width: `${progressPercent}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ============================================================== */}
+                  {/* DAFTAR 1: RUANGAN BELUM DIISI */}
+                  {/* ============================================================== */}
+                  <div className="bg-white border-2 border-black rounded-xl p-4 shadow-[3px_3px_0px_#000] space-y-3">
+                    <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="w-2.5 h-2.5 rounded-full bg-amber-500 shrink-0"></span>
+                        <h3 className="font-extrabold text-xs uppercase tracking-wider text-slate-900">
+                          Ruangan Belum Diisi - Sesi {activeSession === 'PAGI' ? 'Pagi' : 'Siang'} ({uncompletedRooms.length})
+                        </h3>
+                      </div>
+                      <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
+                        Wajib Scan QR
+                      </span>
+                    </div>
+
+                    <div className="space-y-2">
+                      {uncompletedRooms.length > 0 ? (
+                        uncompletedRooms.map((room) => {
+                          const otherSession = activeSession === 'PAGI' ? 'SIANG' : 'PAGI';
+                          const isOtherDone = completedRooms.some(
+                            (cr) => cr.room_id === room.id && cr.session === otherSession
+                          );
+
+                          return (
+                            <div
+                              key={room.id}
+                              className="p-3 border border-slate-200 rounded-xl bg-slate-50/70 flex items-center justify-between gap-3 shadow-sm"
+                            >
+                              <div className="min-w-0">
+                                <div className="font-bold text-sm text-slate-900 truncate flex items-center gap-1.5">
+                                  <span>{room.name}</span>
+                                  {isOtherDone && (
+                                    <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 border border-emerald-300 px-1.5 py-0.2 rounded shrink-0">
+                                      ✓ {otherSession} Selesai
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-[11px] text-slate-500 font-medium mt-0.5">
+                                  {room.items?.length || 0} Perangkat
+                                </div>
                               </div>
-                              <div className="text-[10px] text-gray-500 font-semibold pl-4">
-                                {room.items?.length || 0} Perangkat {isStationArea && '• (No Climate)'}
+
+                              <div className="shrink-0 flex items-center gap-1.5 text-[11px] font-bold text-slate-600 bg-slate-100 border border-slate-200 px-2.5 py-1.5 rounded-lg">
+                                <QrCode className="w-3.5 h-3.5 text-slate-500" />
+                                <span>Scan QR</span>
                               </div>
                             </div>
-
-                            <button
-                              type="button"
-                              onClick={() => startInspectingRoom(room)}
-                              className="text-[11px] font-black px-2 py-1 border border-black bg-white hover:bg-black hover:text-white transition-colors"
-                            >
-                              {isCompleted ? 'Edit' : 'Inspeksi'}
-                            </button>
-                          </div>
-                        );
-                      })
-                    ) : (
-                      <div className="p-3 bg-yellow-100 border-2 border-black text-xs font-bold text-center">
-                        Belum ada ruangan di stasiun ini. Silakan buka menu{' '}
-                        <Link href="/admin" className="underline font-black text-red-600">
-                          Admin
-                        </Link>{' '}
-                        untuk generate ruangan.
-                      </div>
-                    )}
+                          );
+                        })
+                      ) : allStationRooms.length === 0 ? (
+                        <div className="p-3 bg-amber-50 border border-amber-300 rounded-lg text-xs font-semibold text-center text-amber-900">
+                          Belum ada ruangan di stasiun ini. Silakan buka menu{' '}
+                          <Link href="/admin" className="underline font-bold text-red-600">
+                            Admin
+                          </Link>{' '}
+                          untuk generate ruangan.
+                        </div>
+                      ) : (
+                        <div className="p-3 bg-emerald-50 border border-emerald-300 rounded-lg text-center space-y-1">
+                          <CheckCircle2 className="w-5 h-5 text-emerald-600 mx-auto" />
+                          <p className="text-xs font-extrabold text-emerald-900">
+                            Semua Ruangan Sesi {activeSession === 'PAGI' ? 'Pagi' : 'Siang'} Telah Selesai!
+                          </p>
+                          <p className="text-[11px] text-emerald-700">
+                            {activeSession === 'PAGI'
+                              ? 'Seluruh ruangan sesi pagi sudah diinspeksi. Anda dapat mengisi catatan utama atau lanjut ke Sesi Siang.'
+                              : 'Seluruh ruangan sesi siang sudah diinspeksi. Silakan submit catatan utama stasiun.'}
+                          </p>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
 
-                {/* Station Final Notes & Submit Card */}
-                {completedRooms.length > 0 && (
-                  <div className="brutal-card-lg p-5 bg-white border-4 border-black space-y-3">
-                    <div className="border-b-2 border-black pb-2">
-                      <span className="brutal-badge bg-red-600 text-white text-[10px] mb-1">
-                        FORM AKHIR STASIUN
+                  {/* ============================================================== */}
+                  {/* DAFTAR 2: RUANGAN SELESAI DIINSPEKSI */}
+                  {/* ============================================================== */}
+                  <div className="bg-white border-2 border-black rounded-xl p-4 shadow-[3px_3px_0px_#000] space-y-3">
+                    <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0"></span>
+                        <h3 className="font-extrabold text-xs uppercase tracking-wider text-slate-900">
+                          Ruangan Selesai Diinspeksi - Sesi {activeSession === 'PAGI' ? 'Pagi' : 'Siang'} ({doneRooms.length})
+                        </h3>
+                      </div>
+                      <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
+                        Terkunci
                       </span>
-                      <h3 className="font-black text-base uppercase text-black">
-                        Catatan Utama Stasiun {currentStation?.name}
+                    </div>
+
+                    <div className="space-y-2">
+                      {doneRooms.length > 0 ? (
+                        doneRooms.map((room) => {
+                          const completedData = completedRooms.find(
+                            (cr) => cr.room_id === room.id && cr.session === activeSession
+                          );
+                          const otherSession = activeSession === 'PAGI' ? 'SIANG' : 'PAGI';
+                          const otherData = completedRooms.find(
+                            (cr) => cr.room_id === room.id && cr.session === otherSession
+                          );
+                          const isStationArea = room.name.trim().toLowerCase() === 'station area';
+
+                          return (
+                            <div
+                              key={room.id}
+                              className="p-3 border border-emerald-300 rounded-xl bg-emerald-50/70 flex items-center justify-between gap-3 shadow-sm"
+                            >
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                                  <span className="font-bold text-sm text-slate-900 truncate">
+                                    {room.name}
+                                  </span>
+                                  <span className={`text-[10px] font-black px-1.5 py-0.2 rounded border ${
+                                    activeSession === 'PAGI'
+                                      ? 'bg-amber-100 text-amber-900 border-amber-300'
+                                      : 'bg-orange-100 text-orange-900 border-orange-300'
+                                  }`}>
+                                    {activeSession === 'PAGI' ? '🌅 Pagi' : '☀️ Siang'}
+                                  </span>
+                                  {otherData && (
+                                    <span className="text-[10px] font-bold bg-white text-emerald-800 border border-emerald-300 px-1.5 py-0.2 rounded">
+                                      + {otherSession}
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="text-[11px] text-slate-600 font-medium pl-5.5 mt-0.5">
+                                  {!isStationArea && completedData?.temperature !== undefined && completedData?.temperature !== null ? (
+                                    <span>
+                                      🌡️ {completedData.temperature}°C • 💧 {completedData.humidity}% • {completedData?.items?.length || room.items?.length || 0} Perangkat
+                                    </span>
+                                  ) : (
+                                    <span>{completedData?.items?.length || room.items?.length || 0} Perangkat</span>
+                                  )}
+                                </div>
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  showAlert(
+                                    'error',
+                                    `🔒 Ruangan "${room.name}" sudah berstatus SELESAI untuk Sesi ${activeSession} dan terkunci.`
+                                  )
+                                }
+                                className="shrink-0 text-[11px] font-bold px-2.5 py-1 bg-white text-slate-600 border border-slate-300 hover:border-slate-500 rounded-lg flex items-center gap-1 shadow-sm"
+                              >
+                                <Lock className="w-3 h-3 text-slate-400" />
+                                <span>Selesai</span>
+                              </button>
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <div className="p-3 bg-slate-50 border border-dashed border-slate-300 rounded-lg text-center text-xs text-slate-500">
+                          Belum ada ruangan yang selesai diinspeksi pada Sesi {activeSession === 'PAGI' ? 'Pagi' : 'Siang'}.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* 1. KARTU SUBMIT HASIL SESI INSPEKSI (PAGI / SIANG) */}
+                  <div className="bg-white border-2 border-black rounded-xl p-4 shadow-[3px_3px_0px_#000] space-y-3">
+                    <div className="border-b border-slate-200 pb-2">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full border ${
+                          activeSession === 'PAGI'
+                            ? 'bg-amber-100 text-amber-900 border-amber-300'
+                            : 'bg-orange-100 text-orange-900 border-orange-300'
+                        }`}>
+                          SESI {activeSession}
+                        </span>
+                        {isAllRoomsDoneInCurrentSession && (
+                          <span className="text-[10px] font-bold text-emerald-700 flex items-center gap-1">
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            {doneRooms.length}/{allStationRooms.length} Ruangan Siap Kirim
+                          </span>
+                        )}
+                      </div>
+                      <h3 className="font-extrabold text-sm text-slate-900">
+                        Submit Sesi {activeSession === 'PAGI' ? 'Inspeksi Pagi 🌅' : 'Inspeksi Siang ☀️'}
                       </h3>
-                      <p className="text-[11px] font-semibold text-gray-500">
-                        1 catatan umum stasiun untuk seluruh inspeksi ruangan di atas.
+                      <p className="text-[11px] text-slate-500 mt-0.5">
+                        Kirim data checklist ruangan untuk Sesi {activeSession === 'PAGI' ? 'Pagi' : 'Siang'} ke database server.
                       </p>
                     </div>
 
                     <div>
-                      <label className="block text-xs font-black uppercase mb-1">
-                        Catatan Kunjungan Stasiun
-                      </label>
-                      <textarea
-                        rows={3}
-                        value={stationNotes}
-                        onChange={(e) => setStationNotes(e.target.value)}
-                        placeholder="Contoh: Seluruh perangkat berjalan normal, AC presisi ruang datacenter stabil, kebersihan ruangan baik..."
-                        className="brutal-input text-xs"
-                      />
-                    </div>
-
-                    <button
-                      type="button"
-                      disabled={isSubmitting}
-                      onClick={handleSubmitStationInspection}
-                      className="w-full brutal-btn brutal-btn-primary text-sm py-3 font-black flex items-center justify-center gap-2"
-                    >
-                      {isSubmitting ? (
-                        <span>Menyimpan ke Server...</span>
+                      {isAllRoomsDoneInCurrentSession ? (
+                        <button
+                          type="button"
+                          disabled={isSubmitting}
+                          onClick={handleSubmitStationInspection}
+                          className="w-full bg-red-600 hover:bg-red-700 text-white border-2 border-black rounded-xl text-xs py-3 font-extrabold flex items-center justify-center gap-1.5 shadow-[2px_2px_0px_#000] active:translate-x-[1px] active:translate-y-[1px] transition-transform"
+                        >
+                          {isSubmitting ? (
+                            <span>Menyimpan ke Server...</span>
+                          ) : (
+                            <>
+                              <Send className="w-4 h-4" />
+                              <span>Submit & Selesaikan Sesi {activeSession === 'PAGI' ? 'Pagi' : 'Siang'} ({doneRooms.length} Ruangan)</span>
+                            </>
+                          )}
+                        </button>
                       ) : (
-                        <>
-                          <Send className="w-4 h-4" />
-                          <span>Submit & Selesaikan Inspeksi</span>
-                        </>
+                        <div className="bg-slate-50 border border-slate-300 rounded-xl p-3 text-center text-xs text-slate-600 font-medium">
+                          Submit sesi {activeSession === 'PAGI' ? 'pagi' : 'siang'} dapat dilakukan setelah <b>seluruh ruangan ({doneRooms.length} / {allStationRooms.length})</b> selesai diinspeksi.
+                        </div>
                       )}
-                    </button>
+                    </div>
                   </div>
-                )}
-              </div>
-            )}
+
+                  {/* 2. KARTU CATATAN UTAMA STASIUN (1 HARI = 1 CATATAN UTAMA, TERBUKA JIKA PAGI & SIANG SELESAI) */}
+                  {(() => {
+                    const isBothSessionsDone =
+                      allStationRooms.length > 0 &&
+                      pagiRooms.length >= allStationRooms.length &&
+                      siangRooms.length >= allStationRooms.length;
+
+                    return (
+                      <div className="bg-white border-2 border-black rounded-xl p-4 shadow-[3px_3px_0px_#000] space-y-3">
+                        <div className="border-b border-slate-200 pb-2">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full border bg-blue-100 text-blue-900 border-blue-300">
+                              CATATAN UTAMA 1X PER HARI
+                            </span>
+                            {isStationSubmitted && (
+                              <span className="text-[10px] font-bold text-emerald-700 flex items-center gap-1">
+                                <CheckCircle2 className="w-3.5 h-3.5" />
+                                Tersimpan di Server
+                              </span>
+                            )}
+                          </div>
+                          <h3 className="font-extrabold text-sm text-slate-900">
+                            Catatan Utama Kunjungan Stasiun {currentStation?.name}
+                          </h3>
+                          <p className="text-[11px] text-slate-500 mt-0.5">
+                            1 stasiun memiliki 1 catatan utama per hari, dan baru dapat diisi setelah inspeksi Sesi Pagi & Siang telah selesai seluruhnya.
+                          </p>
+                        </div>
+
+                        {!isBothSessionsDone ? (
+                          <div className="bg-amber-50 border-2 border-dashed border-amber-400 rounded-xl p-3.5 space-y-2.5">
+                            <div className="flex items-center gap-2 text-amber-900 font-extrabold text-xs">
+                              <Lock className="w-4 h-4 text-amber-700 shrink-0" />
+                              <span>Catatan Utama Terkunci</span>
+                            </div>
+                            <p className="text-[11px] text-amber-800 font-medium leading-relaxed">
+                              Catatan utama stasiun hanya dapat diisi jika inspeksi <b>Sesi Pagi dan Sesi Siang</b> sudah diselesaikan seluruhnya (1 hari ada 1 catatan utama).
+                            </p>
+                            <div className="grid grid-cols-2 gap-2 pt-1">
+                              <div
+                                className={`p-2 rounded-lg border text-[11px] font-bold flex items-center justify-between ${
+                                  allStationRooms.length > 0 && pagiRooms.length >= allStationRooms.length
+                                    ? 'bg-emerald-100 border-emerald-400 text-emerald-900'
+                                    : 'bg-white border-amber-300 text-amber-900'
+                                }`}
+                              >
+                                <span>🌅 Sesi Pagi</span>
+                                <span>
+                                  {pagiRooms.length}/{allStationRooms.length}{' '}
+                                  {allStationRooms.length > 0 && pagiRooms.length >= allStationRooms.length ? '✓' : '⏳'}
+                                </span>
+                              </div>
+                              <div
+                                className={`p-2 rounded-lg border text-[11px] font-bold flex items-center justify-between ${
+                                  allStationRooms.length > 0 && siangRooms.length >= allStationRooms.length
+                                    ? 'bg-emerald-100 border-emerald-400 text-emerald-900'
+                                    : 'bg-white border-amber-300 text-amber-900'
+                                }`}
+                              >
+                                <span>☀️ Sesi Siang</span>
+                                <span>
+                                  {siangRooms.length}/{allStationRooms.length}{' '}
+                                  {allStationRooms.length > 0 && siangRooms.length >= allStationRooms.length ? '✓' : '⏳'}
+                                </span>
+                              </div>
+                            </div>
+                            <textarea
+                              rows={3}
+                              disabled={true}
+                              value={stationNotes}
+                              placeholder="Catatan utama stasiun akan terbuka otomatis setelah seluruh ruangan di Sesi Pagi dan Siang selesai..."
+                              className="w-full border-2 border-slate-200 bg-slate-100 text-slate-400 rounded-xl p-3 text-xs font-medium cursor-not-allowed outline-none"
+                            />
+                          </div>
+                        ) : (
+                          <div className="space-y-3">
+                            <div className="bg-emerald-50 border-2 border-emerald-400 rounded-xl p-3 flex items-start gap-2.5">
+                              <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+                              <div className="text-xs">
+                                <div className="font-extrabold text-emerald-900">
+                                  Inspeksi Pagi & Siang Telah Selesai!
+                                </div>
+                                <div className="text-emerald-800 text-[11px]">
+                                  Silakan isi Catatan Utama Kunjungan Stasiun untuk hari ini di bawah ini.
+                                </div>
+                              </div>
+                            </div>
+
+                            <div>
+                              <textarea
+                                rows={3}
+                                value={stationNotes}
+                                onChange={(e) => setStationNotes(e.target.value)}
+                                placeholder="Contoh: Seluruh perangkat IT & transmisi berjalan normal pada kedua sesi, kondisi temperatur dan kelembapan stabil..."
+                                className="w-full border-2 border-slate-300 focus:border-red-600 rounded-xl p-3 text-xs font-medium outline-none transition-colors"
+                              />
+                            </div>
+
+                            <button
+                              type="button"
+                              disabled={isSubmitting}
+                              onClick={handleSaveDailyStationNotes}
+                              className="w-full bg-blue-600 hover:bg-blue-700 text-white border-2 border-black rounded-xl text-xs py-3 font-extrabold flex items-center justify-center gap-1.5 shadow-[2px_2px_0px_#000] active:translate-x-[1px] active:translate-y-[1px] transition-transform"
+                            >
+                              {isSubmitting ? (
+                                <span>Menyimpan ke Server...</span>
+                              ) : (
+                                <>
+                                  <Send className="w-4 h-4" />
+                                  <span>
+                                    {isStationSubmitted
+                                      ? 'Perbarui Catatan Utama Hari Ini (Edit)'
+                                      : 'Simpan Catatan Utama Hari Ini (1x Per Hari)'}
+                                  </span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
+              );
+            })()}
 
             {/* ============================================================ */}
             {/* SCREEN B: ROOM INSPECTION FORM */}
             {/* ============================================================ */}
             {currentInspectingRoom && (
-              <div className="brutal-card-lg p-5 bg-white border-4 border-black space-y-4">
+              <div className="bg-white border-2 border-black rounded-2xl p-4 shadow-[3px_3px_0px_#000] space-y-4">
                 {/* Header Room Info */}
-                <div className="border-b-3 border-black pb-3">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="brutal-badge bg-red-600 text-white text-[10px]">
-                      FORM RUANGAN
-                    </span>
+                <div className="border-b border-slate-200 pb-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10px] font-extrabold bg-red-100 text-red-900 border border-red-300 px-2 py-0.5 rounded-full">
+                        FORM RUANGAN
+                      </span>
+                      <span className={`text-[10px] font-black px-2 py-0.5 rounded-full border ${
+                        activeSession === 'PAGI'
+                          ? 'bg-amber-100 text-amber-900 border-amber-300'
+                          : 'bg-orange-100 text-orange-900 border-orange-300'
+                      }`}>
+                        {activeSession === 'PAGI' ? '🌅 Sesi Pagi' : '☀️ Sesi Siang'}
+                      </span>
+                    </div>
                     <button
                       type="button"
                       onClick={() => setCurrentInspectingRoom(null)}
-                      className="text-xs font-black text-gray-600 hover:text-black underline"
+                      className="text-xs font-bold text-slate-600 hover:text-black underline"
                     >
                       ← Kembali
                     </button>
                   </div>
-                  <h2 className="text-xl font-black uppercase text-black tracking-tight">
+                  <h2 className="text-lg font-black uppercase text-slate-900 tracking-tight">
                     {currentInspectingRoom.name}
                   </h2>
-                  <p className="text-xs font-bold text-gray-600">
+                  <p className="text-xs text-slate-500 font-medium">
                     Stasiun {currentStation?.name} [{currentStation?.code}] {currentInspectingRoom.location && `• ${currentInspectingRoom.location}`}
                   </p>
                 </div>
 
                 <form onSubmit={handleSaveRoomInspection} className="space-y-4">
-                  {/* Climate Parameters: Suhu & Kelembapan */}
-                  {/* ATURAN: Kecuali nama ruangan 'Station Area' */}
-                  {currentInspectingRoom.name.trim().toLowerCase() === 'station area' ? (
-                    <div className="bg-yellow-200 border-2 border-black p-3 text-xs font-black flex items-center gap-2">
-                      <span className="bg-black text-white px-1.5 py-0.5 text-[10px]">
-                        INFO
-                      </span>
-                      <span>
-                        Ruangan <b>Station Area</b> (Area Publik): Parameter Suhu & Kelembapan tidak diperlukan.
-                      </span>
-                    </div>
-                  ) : (
-                    <div className="p-3 bg-red-50 border-3 border-black space-y-3">
-                      <div className="flex items-center gap-1.5 border-b-2 border-black pb-1.5">
+                  {/* Climate Parameters: Suhu & Kelembapan (Kecuali nama ruangan 'Station Area') */}
+                  {currentInspectingRoom.name.trim().toLowerCase() === 'station area' ? null : (
+                    <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
+                      <div className="flex items-center gap-1.5 pb-1">
                         <Thermometer className="w-4 h-4 text-red-600" />
-                        <h4 className="font-black text-xs uppercase text-black">
+                        <h4 className="font-extrabold text-xs text-slate-900">
                           Suhu & Kelembapan Lingkungan (Desimal)
                         </h4>
                       </div>
 
                       <div className="grid grid-cols-2 gap-3">
                         {/* Suhu */}
-                        <div>
-                          <label className="block text-[11px] font-black uppercase text-gray-700 mb-1 flex items-center gap-1">
+                        <div className="bg-white p-2.5 rounded-lg border border-slate-200 shadow-sm">
+                          <label className="block text-[11px] font-bold text-slate-600 mb-1 flex items-center gap-1">
                             <Thermometer className="w-3.5 h-3.5 text-red-600" />
                             Suhu (°C)
                           </label>
@@ -750,17 +1226,17 @@ export default function TechnicianApp() {
                             placeholder="21.5"
                             value={tempInput}
                             onChange={(e) => setTempInput(e.target.value)}
-                            className="brutal-input text-base font-black py-2"
+                            className="w-full text-center text-lg font-black border border-slate-300 focus:border-red-600 rounded-lg p-1.5 outline-none"
                             required
                           />
-                          <span className="text-[10px] text-gray-500 font-bold block mt-0.5">
-                            Standard: 18.0 - 24.0 °C
+                          <span className="text-[10px] text-slate-400 font-medium block text-center mt-1">
+                            Normal: 18.0 - 24.0 °C
                           </span>
                         </div>
 
                         {/* Kelembapan */}
-                        <div>
-                          <label className="block text-[11px] font-black uppercase text-gray-700 mb-1 flex items-center gap-1">
+                        <div className="bg-white p-2.5 rounded-lg border border-slate-200 shadow-sm">
+                          <label className="block text-[11px] font-bold text-slate-600 mb-1 flex items-center gap-1">
                             <Droplets className="w-3.5 h-3.5 text-blue-600" />
                             Kelembapan (%)
                           </label>
@@ -770,127 +1246,98 @@ export default function TechnicianApp() {
                             placeholder="55.0"
                             value={humInput}
                             onChange={(e) => setHumInput(e.target.value)}
-                            className="brutal-input text-base font-black py-2"
+                            className="w-full text-center text-lg font-black border border-slate-300 focus:border-blue-600 rounded-lg p-1.5 outline-none"
                             required
                           />
-                          <span className="text-[10px] text-gray-500 font-bold block mt-0.5">
-                            Standard: 45.0 - 65.0 %
+                          <span className="text-[10px] text-slate-400 font-medium block text-center mt-1">
+                            Normal: 45.0 - 65.0 %
                           </span>
                         </div>
                       </div>
                     </div>
                   )}
 
-                  {/* Checklist Perangkat / Items (Each datacenter has different items) */}
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between border-b-2 border-black pb-1">
-                      <h4 className="font-black text-xs uppercase text-black flex items-center gap-1.5">
+                  {/* Checklist Perangkat / Items */}
+                  <div className="space-y-2.5">
+                    <div className="flex items-center justify-between border-b border-slate-200 pb-1.5">
+                      <h4 className="font-extrabold text-xs text-slate-900 flex items-center gap-1.5">
                         <ClipboardCheck className="w-4 h-4 text-red-600" />
-                        Checklist Perangkat Ruangan ({currentInspectingRoom.items?.length || 0})
+                        Checklist Perangkat ({currentInspectingRoom.items?.length || 0})
                       </h4>
-                      <span className="text-[10px] font-bold text-gray-500">
-                        Pilih Normal / Abnormal
+                      <span className="text-[11px] font-medium text-slate-500">
+                        Pilih status:
                       </span>
                     </div>
 
                     {currentInspectingRoom.items && currentInspectingRoom.items.length > 0 ? (
-                      <div className="space-y-2.5">
+                      <div className="space-y-2">
                         {currentInspectingRoom.items.map((itm) => {
-                          const itmState = itemStatuses[itm.id] || { status: 'NORMAL', notes: '' };
-                          const isNormal = itmState.status === 'NORMAL';
+                          const itmStatus = itemStatuses[itm.id] || 'NORMAL';
+                          const isNormal = itmStatus === 'NORMAL';
 
                           return (
                             <div
                               key={itm.id}
-                              className={`p-3 border-2 border-black transition-all ${
-                                isNormal ? 'bg-white' : 'bg-red-50 border-red-600'
+                              className={`p-3 rounded-xl border transition-all ${
+                                isNormal
+                                  ? 'bg-white border-slate-200'
+                                  : 'bg-red-50/70 border-red-300'
                               }`}
                             >
-                              <div className="flex items-center justify-between gap-2 mb-2">
-                                <span className="font-black text-xs uppercase text-black">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="font-bold text-xs text-slate-900">
                                   {itm.name}
                                 </span>
 
-                                {/* Chunky Toggle Buttons */}
-                                <div className="flex gap-1">
+                                {/* Toggle Buttons */}
+                                <div className="flex gap-1.5 shrink-0">
                                   <button
                                     type="button"
                                     onClick={() => toggleItemStatus(itm.id, 'NORMAL')}
-                                    className={`px-2.5 py-1 text-[11px] font-black border-2 border-black uppercase transition-all ${
+                                    className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
                                       isNormal
-                                        ? 'bg-green-500 text-black shadow-[2px_2px_0px_#000]'
-                                        : 'bg-white text-gray-400 hover:text-black'
+                                        ? 'bg-emerald-600 text-white shadow-sm'
+                                        : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
                                     }`}
                                   >
-                                    NORMAL
+                                    Normal
                                   </button>
                                   <button
                                     type="button"
                                     onClick={() => toggleItemStatus(itm.id, 'ABNORMAL')}
-                                    className={`px-2.5 py-1 text-[11px] font-black border-2 border-black uppercase transition-all ${
+                                    className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
                                       !isNormal
-                                        ? 'bg-red-600 text-white shadow-[2px_2px_0px_#000]'
-                                        : 'bg-white text-gray-400 hover:text-black'
+                                        ? 'bg-red-600 text-white shadow-sm'
+                                        : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
                                     }`}
                                   >
-                                    ABNORMAL
+                                    Abnormal
                                   </button>
                                 </div>
                               </div>
-
-                              {/* Input catatan jika ABNORMAL */}
-                              {!isNormal && (
-                                <div className="mt-2 pt-2 border-t border-red-300">
-                                  <label className="block text-[10px] font-black uppercase text-red-700 mb-0.5">
-                                    Catatan Kerusakan / Abnormalitas *
-                                  </label>
-                                  <input
-                                    type="text"
-                                    placeholder="Jelaskan kendala/indikator error..."
-                                    value={itmState.notes}
-                                    onChange={(e) => updateItemNotes(itm.id, e.target.value)}
-                                    className="brutal-input text-xs py-1.5 border-red-600"
-                                    required={!isNormal}
-                                  />
-                                </div>
-                              )}
                             </div>
                           );
                         })}
                       </div>
                     ) : (
-                      <p className="text-xs font-bold text-gray-400 italic text-center py-3 bg-gray-50 border border-black">
+                      <p className="text-xs text-slate-400 italic text-center py-3 bg-slate-50 rounded-lg border border-slate-200">
                         Tidak ada item terdaftar pada ruangan ini.
                       </p>
                     )}
-                  </div>
-
-                  {/* Catatan Ruangan (Opsional) */}
-                  <div>
-                    <label className="block text-xs font-black uppercase mb-1">
-                      Catatan Tambahan Ruangan (Opsional)
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="Contoh: Kunci pintu sedikit macet, lampu indikator rack 2 berkedip..."
-                      value={roomNotes}
-                      onChange={(e) => setRoomNotes(e.target.value)}
-                      className="brutal-input text-xs py-2"
-                    />
                   </div>
 
                   {/* Actions */}
                   <div className="flex gap-2 pt-2">
                     <button
                       type="submit"
-                      className="flex-1 brutal-btn brutal-btn-primary text-xs py-3 font-black"
+                      className="flex-1 bg-red-600 hover:bg-red-700 text-white border-2 border-black rounded-xl text-xs py-3 font-extrabold shadow-[2px_2px_0px_#000] active:translate-x-[1px] active:translate-y-[1px] transition-transform"
                     >
-                      Simpan Inspeksi Ruangan Ini
+                      Simpan Inspeksi Ruangan (Sesi {activeSession === 'PAGI' ? 'Pagi' : 'Siang'})
                     </button>
                     <button
                       type="button"
                       onClick={() => setCurrentInspectingRoom(null)}
-                      className="brutal-btn brutal-btn-secondary text-xs py-3 font-black px-4"
+                      className="px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded-xl text-xs py-3 font-bold transition-colors"
                     >
                       Batal
                     </button>

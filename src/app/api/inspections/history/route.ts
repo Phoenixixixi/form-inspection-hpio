@@ -1,14 +1,31 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 
-export async function GET(request: Request) {
+export async function GET(request: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url);
+    const searchParams = request.nextUrl.searchParams;
     const station_id = searchParams.get('station_id');
+    const session = searchParams.get('session');
+    const today_only = searchParams.get('today_only') !== 'false'; // default true
+
+    // Filter per hari ini (Today: 00:00:00 s/d 23:59:59 waktu lokal)
+    const now = new Date();
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+    const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
 
     const inspections = await prisma.inspections.findMany({
-      where: station_id ? { station_id } : undefined,
-      take: 20,
+      where: {
+        ...(station_id ? { station_id } : {}),
+        ...(session ? { session: session.toUpperCase() } : {}),
+        ...(today_only
+          ? {
+              inspected_at: {
+                gte: startOfDay,
+                lte: endOfDay,
+              },
+            }
+          : {}),
+      },
       orderBy: { inspected_at: 'desc' },
       include: {
         station: {
@@ -28,6 +45,10 @@ export async function GET(request: Request) {
     return NextResponse.json({
       success: true,
       inspections,
+      filter: {
+        today_only,
+        date: startOfDay.toISOString().split('T')[0],
+      },
     });
   } catch (error: any) {
     console.error('Error fetching inspection history:', error);

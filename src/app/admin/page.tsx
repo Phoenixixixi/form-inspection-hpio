@@ -10,6 +10,7 @@ import {
   ListPlus,
   Thermometer,
   Eye,
+  EyeOff,
   CheckCircle2,
   AlertCircle,
   Wrench,
@@ -17,6 +18,9 @@ import {
   ArrowLeft,
   X,
   History,
+  Lock,
+  LogOut,
+  ShieldCheck,
 } from 'lucide-react';
 import PrintableQrSticker from '@/components/PrintableQrSticker';
 
@@ -43,6 +47,15 @@ interface Item {
 }
 
 export default function AdminDashboard() {
+  // Authentication state
+  const [authStatus, setAuthStatus] = useState<'checking' | 'authenticated' | 'unauthenticated'>('checking');
+  const [adminUser, setAdminUser] = useState<{ id: string; email: string; name: string; role_id: string | null } | null>(null);
+  const [loginEmail, setLoginEmail] = useState('admin@kcic.online');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [isSubmittingLogin, setIsSubmittingLogin] = useState(false);
+
   const [stations, setStations] = useState<Station[]>([]);
   const [selectedStationId, setSelectedStationId] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
@@ -64,8 +77,76 @@ export default function AdminDashboard() {
   const [inspectionLogs, setInspectionLogs] = useState<any[]>([]);
 
   useEffect(() => {
-    fetchStations();
+    checkAdminSession();
   }, []);
+
+  const checkAdminSession = async () => {
+    try {
+      setAuthStatus('checking');
+      const res = await fetch('/api/admin/auth');
+      const data = await res.json();
+      if (data.success && data.authenticated && data.user) {
+        setAuthStatus('authenticated');
+        setAdminUser(data.user);
+        await fetchStations();
+      } else {
+        setAuthStatus('unauthenticated');
+        setIsLoading(false);
+      }
+    } catch {
+      setAuthStatus('unauthenticated');
+      setIsLoading(false);
+    }
+  };
+
+  const handleAdminLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoginError(null);
+
+    const email = loginEmail.trim();
+    const password = loginPassword;
+
+    if (!email || !password) {
+      setLoginError('Email dan password wajib diisi');
+      return;
+    }
+
+    try {
+      setIsSubmittingLogin(true);
+      const res = await fetch('/api/admin/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
+
+      const data = await res.json();
+      if (data.success && data.user) {
+        setAuthStatus('authenticated');
+        setAdminUser(data.user);
+        setLoginPassword('');
+        showNotification('success', `Berhasil login sebagai ${data.user.email}`);
+        await fetchStations();
+      } else {
+        setLoginError(data.error || 'Login gagal. Periksa kembali email dan password.');
+      }
+    } catch (err: any) {
+      setLoginError(err.message || 'Terjadi kesalahan sistem saat login');
+    } finally {
+      setIsSubmittingLogin(false);
+    }
+  };
+
+  const handleAdminLogout = async () => {
+    try {
+      await fetch('/api/admin/auth', { method: 'DELETE' });
+      setAuthStatus('unauthenticated');
+      setAdminUser(null);
+      setLoginPassword('');
+      showNotification('success', 'Berhasil keluar dari Admin Panel');
+    } catch (err) {
+      console.error('Logout error', err);
+    }
+  };
 
   const fetchStations = async () => {
     try {
@@ -233,15 +314,161 @@ export default function AdminDashboard() {
     }
   };
 
+  // 1. Loading Screen
+  if (authStatus === 'checking') {
+    return (
+      <div className="min-h-screen bg-[#F4F4F5] flex items-center justify-center p-4">
+        <div className="brutal-card p-6 bg-white max-w-sm w-full text-center space-y-3">
+          <div className="w-10 h-10 border-4 border-black border-t-red-600 rounded-full animate-spin mx-auto" />
+          <h2 className="font-black text-sm uppercase text-black">Memeriksa Akses Admin...</h2>
+          <p className="text-xs text-gray-500 font-medium">Memverifikasi otentikasi administrator stasiun HPIO</p>
+        </div>
+      </div>
+    );
+  }
+
+  // 2. Unauthenticated Screen (Login Form)
+  if (authStatus === 'unauthenticated') {
+    return (
+      <div className="min-h-screen bg-[#F4F4F5] flex flex-col justify-between p-4 sm:p-6">
+        <header className="max-w-md mx-auto w-full flex items-center justify-between py-2">
+          <Link
+            href="/"
+            className="inline-flex items-center gap-1.5 text-xs font-black bg-white border-2 border-black px-3 py-1.5 shadow-[2px_2px_0px_#000] hover:bg-black hover:text-white transition-colors"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span>Kembali ke Mode Teknisi</span>
+          </Link>
+          <span className="text-[10px] font-black uppercase tracking-wider bg-red-600 text-white px-2 py-0.5 border border-black">
+            KCIC HPIO SECURE
+          </span>
+        </header>
+
+        <div className="max-w-md mx-auto w-full my-auto">
+          <div className="brutal-card-lg p-6 sm:p-8 bg-white border-4 border-black shadow-[6px_6px_0px_#000] space-y-5">
+            {/* Header Login */}
+            <div className="border-b-3 border-black pb-4 text-center space-y-2">
+              <div className="w-14 h-14 bg-red-600 border-3 border-black mx-auto flex items-center justify-center text-white shadow-[3px_3px_0px_#000]">
+                <ShieldCheck className="w-8 h-8" />
+              </div>
+              <div>
+                <span className="brutal-badge bg-black text-white text-[10px]">
+                  PORTAL ADMINISTRATOR
+                </span>
+                <h1 className="text-xl font-black uppercase text-black mt-1">
+                  Login Admin Panel
+                </h1>
+                <p className="text-xs text-gray-600 font-semibold mt-1">
+                  Masuk menggunakan akun admin KCIC untuk konfigurasi ruangan & anti-cheat QR
+                </p>
+              </div>
+            </div>
+
+            {/* Error Banner */}
+            {loginError && (
+              <div className="p-3 bg-red-100 border-2 border-red-600 text-red-800 text-xs font-bold flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+                <span>{loginError}</span>
+              </div>
+            )}
+
+            {/* Login Form */}
+            <form onSubmit={handleAdminLogin} className="space-y-4">
+              <div>
+                <label className="block text-xs font-black uppercase tracking-wider text-black mb-1">
+                  Email Administrator
+                </label>
+                <input
+                  type="email"
+                  required
+                  value={loginEmail}
+                  onChange={(e) => setLoginEmail(e.target.value)}
+                  placeholder="admin@kcic.online"
+                  className="w-full brutal-input font-bold text-xs p-3 bg-slate-50 border-2 border-black focus:bg-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-black uppercase tracking-wider text-black mb-1">
+                  Password
+                </label>
+                <div className="relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    value={loginPassword}
+                    onChange={(e) => setLoginPassword(e.target.value)}
+                    placeholder="••••••••"
+                    className="w-full brutal-input font-bold text-xs pl-3 pr-10 py-3 bg-slate-50 border-2 border-black focus:bg-white"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-600 hover:text-black"
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="pt-2">
+                <button
+                  type="submit"
+                  disabled={isSubmittingLogin}
+                  className="w-full brutal-btn bg-red-600 hover:bg-red-700 text-white border-2 border-black py-3 font-black text-xs flex items-center justify-center gap-2 shadow-[3px_3px_0px_#000] active:translate-x-[1px] active:translate-y-[1px]"
+                >
+                  {isSubmittingLogin ? (
+                    <span>Memverifikasi Akun...</span>
+                  ) : (
+                    <>
+                      <Lock className="w-4 h-4" />
+                      <span>Masuk ke Admin Panel</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+
+            {/* Quick Helper Badge */}
+            <div className="p-3 bg-slate-50 border-2 border-dashed border-slate-300 rounded-lg text-center space-y-1.5">
+              <span className="text-[10px] text-gray-500 font-bold block">
+                Akun Terdaftar di Database KCIC:
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setLoginEmail('admin@kcic.online');
+                  setLoginPassword('Admin123');
+                }}
+                className="text-[11px] font-mono font-bold text-red-600 hover:text-black bg-white border border-slate-300 hover:border-black px-2.5 py-1 rounded shadow-sm inline-flex items-center gap-1"
+              >
+                <span>admin@kcic.online</span>
+                <span className="text-[10px] text-gray-400">|</span>
+                <span>Admin123</span>
+                <span className="text-[9px] bg-red-100 text-red-800 font-sans px-1 rounded">Isi Form</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <footer className="max-w-md mx-auto w-full text-center py-2 text-[11px] text-gray-500 font-semibold">
+          KCIC HPIO Inspection System • Secure Authentication
+        </footer>
+      </div>
+    );
+  }
+
+  // 3. Authenticated Admin Dashboard
   return (
     <div className="min-h-screen bg-[#F4F4F5] pb-16">
       {/* Top Navigation */}
       <header className="bg-black text-white border-b-4 border-black px-4 py-3 sticky top-0 z-30">
-        <div className="max-w-5xl mx-auto flex items-center justify-between">
+        <div className="max-w-5xl mx-auto flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <Link
               href="/"
-              className="p-1.5 bg-red-600 border-2 border-white hover:bg-white hover:text-black transition-colors"
+              className="p-1.5 bg-red-600 border-2 border-white hover:bg-white hover:text-black transition-colors shrink-0"
+              title="Kembali ke Mode Teknisi"
             >
               <ArrowLeft className="w-5 h-5" />
             </Link>
@@ -254,18 +481,38 @@ export default function AdminDashboard() {
                   IT Room & QR Generator
                 </h1>
               </div>
-              <p className="text-[11px] text-gray-300 font-semibold">
+              <p className="text-[11px] text-gray-300 font-semibold hidden sm:block">
                 Setup Ruangan, Checklist Item & Cetak Anti-Cheat QR
               </p>
             </div>
           </div>
-          <Link
-            href="/"
-            className="brutal-btn brutal-btn-primary text-xs py-1.5 px-3 font-black flex items-center gap-1.5"
-          >
-            <Wrench className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Mode Teknisi</span>
-          </Link>
+
+          <div className="flex items-center gap-2">
+            {adminUser && (
+              <div className="hidden md:flex items-center gap-1.5 px-2.5 py-1 bg-neutral-900 border border-neutral-700 text-[11px]">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                <span className="font-mono text-gray-300 font-bold">{adminUser.email}</span>
+                <span className="text-[9px] bg-red-600 text-white font-black px-1.5 py-0.2 rounded uppercase">
+                  {adminUser.role_id || 'Superadmin'}
+                </span>
+              </div>
+            )}
+            <Link
+              href="/"
+              className="brutal-btn brutal-btn-primary text-xs py-1.5 px-3 font-black flex items-center gap-1.5"
+            >
+              <Wrench className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Mode Teknisi</span>
+            </Link>
+            <button
+              onClick={handleAdminLogout}
+              className="brutal-btn bg-white hover:bg-red-600 hover:text-white text-black text-xs py-1.5 px-2.5 font-black flex items-center gap-1.5 border-2 border-white transition-colors"
+              title="Keluar dari Admin Panel"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Logout</span>
+            </button>
+          </div>
         </div>
       </header>
 
@@ -639,42 +886,123 @@ export default function AdminDashboard() {
           )}
         </div>
 
-        {/* Inspection History Log for this Station */}
-        {inspectionLogs.length > 0 && (
-          <div className="brutal-card p-4 sm:p-5 bg-white">
-            <div className="flex items-center gap-2 border-b-2 border-black pb-2 mb-3">
+        {/* Inspeksi Khusus Per Hari Ini */}
+        <div className="brutal-card p-4 sm:p-5 bg-white border-3 border-black">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b-2 border-black pb-2 mb-3 gap-2">
+            <div className="flex items-center gap-2">
               <History className="w-5 h-5 text-red-600" />
-              <h3 className="font-black text-sm uppercase text-black tracking-wide">
-                Riwayat Inspeksi Terakhir Stasiun {selectedStation?.name}
-              </h3>
+              <div>
+                <h3 className="font-black text-sm uppercase text-black tracking-wide">
+                  Inspeksi Hari Ini ({selectedStation?.name})
+                </h3>
+                <p className="text-[11px] font-bold text-gray-500">
+                  Hanya menampilkan form inspeksi yang masuk pada hari ini
+                </p>
+              </div>
             </div>
-
-            <div className="divide-y-2 divide-black">
-              {inspectionLogs.slice(0, 5).map((log) => (
-                <div key={log.id} className="py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs">
-                  <div>
-                    <span className="font-black uppercase text-black mr-2">
-                      {log.room?.name || 'Area Stasiun'}
-                    </span>
-                    <span className="text-gray-500 font-semibold">
-                      oleh <b>{log.user_id}</b> ({new Date(log.inspected_at).toLocaleString('id-ID')})
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {log.temperature && (
-                      <span className="brutal-badge bg-red-50 text-red-700 text-[10px]">
-                        {log.temperature}°C / {log.humidity}%
-                      </span>
-                    )}
-                    <span className="brutal-badge bg-gray-100 text-[10px]">
-                      {log.inspection_items?.length || 0} Item Diperiksa
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
+            <span className="brutal-badge bg-black text-white text-[10px] self-start sm:self-auto">
+              Total: {inspectionLogs.length} Ruangan
+            </span>
           </div>
-        )}
+
+          {inspectionLogs.length === 0 ? (
+            <div className="p-4 bg-gray-50 border-2 border-black text-center text-xs font-bold text-gray-500">
+              Belum ada data inspeksi yang masuk per hari ini untuk stasiun {selectedStation?.name}.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {inspectionLogs.map((log) => {
+                const abnormalItems = (log.inspection_items || []).filter(
+                  (i: any) => i.status === 'ABNORMAL'
+                );
+                const normalCount = (log.inspection_items || []).length - abnormalItems.length;
+
+                return (
+                  <div
+                    key={log.id}
+                    className="p-3 border-2 border-black bg-white hover:bg-gray-50 space-y-2"
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-black uppercase text-sm text-black">
+                          {log.room?.name || 'Area Stasiun'}
+                        </span>
+                        <span className={`brutal-badge text-[10px] font-black ${
+                          log.session === 'SIANG'
+                            ? 'bg-orange-100 text-orange-900 border-orange-500'
+                            : 'bg-amber-100 text-amber-900 border-amber-500'
+                        }`}>
+                          {log.session === 'SIANG' ? '☀️ SIANG' : '🌅 PAGI'}
+                        </span>
+                        <span className="brutal-badge bg-gray-100 text-[10px]">
+                          Teknisi: {log.user_id}
+                        </span>
+                      </div>
+                      <span className="text-[11px] font-mono font-bold text-gray-600">
+                        {new Date(log.inspected_at).toLocaleTimeString('id-ID', {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}{' '}
+                        WIB
+                      </span>
+                    </div>
+
+                    {/* Parameters & Badges */}
+                    <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-gray-200">
+                      {log.temperature ? (
+                        <span className="brutal-badge bg-red-50 text-red-700 border-red-700 text-[10px]">
+                          🌡️ {log.temperature}°C • 💧 {log.humidity}%
+                        </span>
+                      ) : (
+                        <span className="brutal-badge bg-yellow-200 text-black text-[10px]">
+                          Station Area (Tanpa Suhu)
+                        </span>
+                      )}
+
+                      <span className="brutal-badge bg-green-100 text-green-800 text-[10px]">
+                        ✓ {normalCount} Normal
+                      </span>
+
+                      {abnormalItems.length > 0 && (
+                        <span className="brutal-badge bg-red-600 text-white text-[10px]">
+                          ⚠️ {abnormalItems.length} ABNORMAL
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Item checklist list */}
+                    <div className="flex flex-wrap gap-1 pt-1">
+                      {(log.inspection_items || []).map((itm: any) => (
+                        <span
+                          key={itm.id}
+                          className={`text-[10px] font-bold px-1.5 py-0.5 border ${
+                            itm.status === 'ABNORMAL'
+                              ? 'bg-red-100 border-red-600 text-red-700'
+                              : 'bg-white border-black text-black'
+                          }`}
+                        >
+                          {itm.item?.name || 'Item'} [{itm.status}]
+                        </span>
+                      ))}
+                    </div>
+
+                    {/* Catatan Utama Stasiun (jika ada) */}
+                    {log.notes && (
+                      <div className="mt-2 bg-yellow-50 border-2 border-black p-2 text-xs">
+                        <span className="font-black uppercase text-[10px] text-gray-700 block mb-0.5">
+                          Catatan Utama Kunjungan Stasiun:
+                        </span>
+                        <p className="font-semibold text-black whitespace-pre-wrap">
+                          {log.notes}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </main>
 
       {/* Modal QR Code Sticker Preview */}
