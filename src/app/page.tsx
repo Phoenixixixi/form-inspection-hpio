@@ -96,10 +96,14 @@ export default function TechnicianApp() {
   const [humInput, setHumInput] = useState<string>('55.0');
   const [itemStatuses, setItemStatuses] = useState<Record<string, 'NORMAL' | 'ABNORMAL'>>({});
 
-  // Step 4: Station Aggregation State (Single Catatan Utama for the station)
+  // Step 4: Station Aggregation State (Catatan Utama per Sesi Inspeksi)
   const [completedRooms, setCompletedRooms] = useState<CompletedRoomInspection[]>([]);
-  const [stationNotes, setStationNotes] = useState<string>('');
-  const [isStationSubmitted, setIsStationSubmitted] = useState<boolean>(false);
+  const [pagiNotes, setPagiNotes] = useState<string>('');
+  const [siangNotes, setSiangNotes] = useState<string>('');
+  const [submittedSessions, setSubmittedSessions] = useState<{ PAGI: boolean; SIANG: boolean }>({
+    PAGI: false,
+    SIANG: false,
+  });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submissionSuccess, setSubmissionSuccess] = useState<any | null>(null);
 
@@ -179,13 +183,24 @@ export default function TechnicianApp() {
         setCompletedRooms(merged);
         localStorage.setItem(`hpio_progress_${stationId}_${todayKey}`, JSON.stringify(merged));
 
-        // Jika sudah ada data inspeksi hari ini, isikan catatan utama yang tersimpan
-        const existingNote = data.inspections.find(
-          (i: any) => i.notes && i.notes.trim().length > 0
+        // Cek status submit per sesi dari database
+        const hasPagi = data.inspections.some((i: any) => i.session === 'PAGI');
+        const hasSiang = data.inspections.some((i: any) => i.session === 'SIANG');
+        setSubmittedSessions({ PAGI: hasPagi, SIANG: hasSiang });
+
+        // Ambil catatan utama masing-masing sesi jika sudah pernah disimpan
+        const existingPagiNote = data.inspections.find(
+          (i: any) => i.session === 'PAGI' && i.notes && i.notes.trim().length > 0
         )?.notes;
-        if (existingNote) {
-          setStationNotes(existingNote);
-          setIsStationSubmitted(true);
+        if (existingPagiNote) {
+          setPagiNotes(existingPagiNote);
+        }
+
+        const existingSiangNote = data.inspections.find(
+          (i: any) => i.session === 'SIANG' && i.notes && i.notes.trim().length > 0
+        )?.notes;
+        if (existingSiangNote) {
+          setSiangNotes(existingSiangNote);
         }
         return;
       }
@@ -353,11 +368,20 @@ export default function TechnicianApp() {
     setCurrentInspectingRoom(null);
   };
 
-  // Submit full station inspection for active session (Pagi atau Siang tanpa catatan utama)
+  // Submit full station inspection for active session (Pagi atau Siang) sekalian dengan catatan utama sesi tsb
   const handleSubmitStationInspection = async () => {
     if (!currentStation) return;
     const totalRooms = currentStation.rooms?.length || 0;
     const sessionCompletedRooms = completedRooms.filter((r) => r.session === activeSession);
+
+    // Cegah kirim 2 kali untuk sesi yang sama
+    if (submittedSessions[activeSession]) {
+      showAlert(
+        'error',
+        `🔒 Sesi ${activeSession === 'PAGI' ? 'Pagi' : 'Siang'} sudah pernah disubmit hari ini dan telah terkunci!`
+      );
+      return;
+    }
 
     if (totalRooms === 0 || sessionCompletedRooms.length < totalRooms) {
       showAlert(
@@ -367,6 +391,8 @@ export default function TechnicianApp() {
       return;
     }
 
+    const currentNote = activeSession === 'PAGI' ? pagiNotes : siangNotes;
+
     try {
       setIsSubmitting(true);
 
@@ -374,7 +400,7 @@ export default function TechnicianApp() {
         station_id: currentStation.id,
         technician_name: selectedTechnicianName,
         session: activeSession,
-        station_notes: stationNotes.trim() || null,
+        station_notes: currentNote.trim() || null,
         room_inspections: sessionCompletedRooms.map((r) => ({
           room_id: r.room_id,
           temperature: r.temperature,
@@ -397,6 +423,7 @@ export default function TechnicianApp() {
 
       const data = await res.json();
       if (data.success) {
+        setSubmittedSessions((prev) => ({ ...prev, [activeSession]: true }));
         setSubmissionSuccess({
           stationName: currentStation.name,
           stationCode: currentStation.code,
@@ -406,6 +433,10 @@ export default function TechnicianApp() {
           savedCount: data.savedCount,
           time: new Date().toLocaleTimeString('id-ID'),
         });
+        showAlert(
+          'success',
+          `✓ Sesi ${activeSession === 'PAGI' ? 'Pagi' : 'Siang'} beserta Catatan Utama berhasil disubmit ke server!`
+        );
         await loadStationProgress(currentStation.id);
       } else {
         showAlert('error', data.error || 'Gagal menyimpan hasil inspeksi');
@@ -417,27 +448,10 @@ export default function TechnicianApp() {
     }
   };
 
-  // Simpan / Perbarui Catatan Utama Stasiun (HANYA AKTIF JIKA PAGI & SIANG SUDAH SELESAI)
-  const handleSaveDailyStationNotes = async () => {
+  // Perbarui Catatan Utama Sesi jika sudah pernah disubmit
+  const handleUpdateSessionNotes = async () => {
     if (!currentStation) return;
-    const totalRooms = currentStation.rooms?.length || 0;
-    const sessionPagiDone = completedRooms.filter((r) => r.session === 'PAGI').length;
-    const sessionSiangDone = completedRooms.filter((r) => r.session === 'SIANG').length;
-    const isBothDone = totalRooms > 0 && sessionPagiDone >= totalRooms && sessionSiangDone >= totalRooms;
-
-    if (!isBothDone) {
-      showAlert(
-        'error',
-        'Catatan utama stasiun hanya dapat diisi jika inspeksi Sesi Pagi dan Sesi Siang sudah diselesaikan seluruhnya!'
-      );
-      return;
-    }
-
-    const cleanNotes = stationNotes.trim();
-    if (!cleanNotes) {
-      showAlert('error', 'Catatan utama stasiun wajib diisi!');
-      return;
-    }
+    const currentNote = activeSession === 'PAGI' ? pagiNotes : siangNotes;
 
     try {
       setIsSubmitting(true);
@@ -446,14 +460,17 @@ export default function TechnicianApp() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           station_id: currentStation.id,
-          station_notes: cleanNotes,
+          session: activeSession,
+          station_notes: currentNote.trim() || null,
         }),
       });
 
       const data = await res.json();
       if (data.success) {
-        setIsStationSubmitted(true);
-        showAlert('success', '✓ Catatan utama kunjungan stasiun hari ini berhasil disimpan!');
+        showAlert(
+          'success',
+          `✓ Catatan utama Sesi ${activeSession === 'PAGI' ? 'Pagi' : 'Siang'} berhasil diperbarui!`
+        );
       } else {
         showAlert('error', data.error || 'Gagal memperbarui catatan utama');
       }
@@ -468,8 +485,9 @@ export default function TechnicianApp() {
     setIsSessionStarted(false);
     setCurrentInspectingRoom(null);
     setCompletedRooms([]);
-    setStationNotes('');
-    setIsStationSubmitted(false);
+    setPagiNotes('');
+    setSiangNotes('');
+    setSubmittedSessions({ PAGI: false, SIANG: false });
     setSubmissionSuccess(null);
   };
 
@@ -755,7 +773,7 @@ export default function TechnicianApp() {
                         <span>Sesi Inspeksi Hari Ini (2x Sehari):</span>
                       </span>
                       <span className="text-[10px] text-amber-700 font-extrabold bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
-                        Catatan: 1x Per Hari
+                        Catatan Tiap Sesi
                       </span>
                     </div>
 
@@ -771,9 +789,15 @@ export default function TechnicianApp() {
                       >
                         <Sun className="w-4 h-4 text-amber-700" />
                         <span>Inspeksi Pagi</span>
-                        <span className="text-[10px] bg-black text-white px-1.5 py-0.5 rounded font-mono">
-                          {pagiRooms.length}/{allStationRooms.length}
-                        </span>
+                        {submittedSessions.PAGI ? (
+                          <span className="text-[10px] bg-emerald-600 text-white px-1.5 py-0.5 rounded font-black">
+                            ✓ Terkirim
+                          </span>
+                        ) : (
+                          <span className="text-[10px] bg-black text-white px-1.5 py-0.5 rounded font-mono">
+                            {pagiRooms.length}/{allStationRooms.length}
+                          </span>
+                        )}
                       </button>
 
                       <button
@@ -787,9 +811,15 @@ export default function TechnicianApp() {
                       >
                         <Sunset className="w-4 h-4 text-white" />
                         <span>Inspeksi Siang</span>
-                        <span className="text-[10px] bg-black text-white px-1.5 py-0.5 rounded font-mono">
-                          {siangRooms.length}/{allStationRooms.length}
-                        </span>
+                        {submittedSessions.SIANG ? (
+                          <span className="text-[10px] bg-emerald-600 text-white px-1.5 py-0.5 rounded font-black">
+                            ✓ Terkirim
+                          </span>
+                        ) : (
+                          <span className="text-[10px] bg-black text-white px-1.5 py-0.5 rounded font-mono">
+                            {siangRooms.length}/{allStationRooms.length}
+                          </span>
+                        )}
                       </button>
                     </div>
                   </div>
@@ -893,8 +923,8 @@ export default function TechnicianApp() {
                           </p>
                           <p className="text-[11px] text-emerald-700">
                             {activeSession === 'PAGI'
-                              ? 'Seluruh ruangan sesi pagi sudah diinspeksi. Anda dapat mengisi catatan utama atau lanjut ke Sesi Siang.'
-                              : 'Seluruh ruangan sesi siang sudah diinspeksi. Silakan submit catatan utama stasiun.'}
+                              ? 'Seluruh ruangan sesi pagi sudah diinspeksi. Lengkapi catatan utama sesi pagi lalu klik submit di bawah.'
+                              : 'Seluruh ruangan sesi siang sudah diinspeksi. Lengkapi catatan utama sesi siang lalu klik submit di bawah.'}
                           </p>
                         </div>
                       )}
@@ -989,7 +1019,7 @@ export default function TechnicianApp() {
                     </div>
                   </div>
 
-                  {/* 1. KARTU SUBMIT HASIL SESI INSPEKSI (PAGI / SIANG) */}
+                  {/* KARTU SUBMIT HASIL SESI INSPEKSI & CATATAN UTAMA (PAGI / SIANG) */}
                   <div className="bg-white border-2 border-black rounded-xl p-4 shadow-[3px_3px_0px_#000] space-y-3">
                     <div className="border-b border-slate-200 pb-2">
                       <div className="flex items-center justify-between mb-1">
@@ -998,40 +1028,119 @@ export default function TechnicianApp() {
                             ? 'bg-amber-100 text-amber-900 border-amber-300'
                             : 'bg-orange-100 text-orange-900 border-orange-300'
                         }`}>
-                          SESI {activeSession}
+                          SESI {activeSession === 'PAGI' ? 'PAGI 🌅' : 'SIANG ☀️'}
                         </span>
-                        {isAllRoomsDoneInCurrentSession && (
+                        {submittedSessions[activeSession] ? (
+                          <span className="text-[10px] font-black text-emerald-700 bg-emerald-100 border border-emerald-300 px-2 py-0.5 rounded-full flex items-center gap-1">
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            Tersimpan di Database (Terkunci)
+                          </span>
+                        ) : isAllRoomsDoneInCurrentSession ? (
                           <span className="text-[10px] font-bold text-emerald-700 flex items-center gap-1">
                             <CheckCircle2 className="w-3.5 h-3.5" />
                             {doneRooms.length}/{allStationRooms.length} Ruangan Siap Kirim
                           </span>
-                        )}
+                        ) : null}
                       </div>
                       <h3 className="font-extrabold text-sm text-slate-900">
-                        Submit Sesi {activeSession === 'PAGI' ? 'Inspeksi Pagi 🌅' : 'Inspeksi Siang ☀️'}
+                        Submit Sesi {activeSession === 'PAGI' ? 'Inspeksi Pagi & Catatan 🌅' : 'Inspeksi Siang & Catatan ☀️'}
                       </h3>
                       <p className="text-[11px] text-slate-500 mt-0.5">
-                        Kirim data checklist ruangan untuk Sesi {activeSession === 'PAGI' ? 'Pagi' : 'Siang'} ke database server.
+                        Submit checklist seluruh ruangan beserta Catatan Utama Sesi {activeSession === 'PAGI' ? 'Pagi' : 'Siang'} dalam 1 kali kirim.
                       </p>
                     </div>
 
                     <div>
-                      {isAllRoomsDoneInCurrentSession ? (
-                        <button
-                          type="button"
-                          disabled={isSubmitting}
-                          onClick={handleSubmitStationInspection}
-                          className="w-full bg-red-600 hover:bg-red-700 text-white border-2 border-black rounded-xl text-xs py-3 font-extrabold flex items-center justify-center gap-1.5 shadow-[2px_2px_0px_#000] active:translate-x-[1px] active:translate-y-[1px] transition-transform"
-                        >
-                          {isSubmitting ? (
-                            <span>Menyimpan ke Server...</span>
-                          ) : (
-                            <>
-                              <Send className="w-4 h-4" />
-                              <span>Submit & Selesaikan Sesi {activeSession === 'PAGI' ? 'Pagi' : 'Siang'} ({doneRooms.length} Ruangan)</span>
-                            </>
-                          )}
-                        </button>
+                      {submittedSessions[activeSession] ? (
+                        <div className="space-y-3">
+                          <div className="p-3 bg-emerald-50 border-2 border-emerald-400 rounded-xl flex items-start gap-2.5">
+                            <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+                            <div className="text-xs">
+                              <p className="font-extrabold text-emerald-900">
+                                Sesi {activeSession === 'PAGI' ? 'Pagi' : 'Siang'} Telah Disubmit ke Server!
+                              </p>
+                              <p className="text-emerald-800 text-[11px] mt-0.5">
+                                Seluruh data inspeksi ruangan dan catatan utama sesi ini sudah tersimpan dan terkunci agar tidak terkirim dua kali.
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* Catatan Utama yang tersimpan dengan opsi edit jika diperlukan */}
+                          <div className="space-y-1.5">
+                            <label className="block text-xs font-bold text-slate-700">
+                              Catatan Utama Sesi {activeSession === 'PAGI' ? 'Pagi' : 'Siang'} (Tersimpan):
+                            </label>
+                            <textarea
+                              rows={3}
+                              value={activeSession === 'PAGI' ? pagiNotes : siangNotes}
+                              onChange={(e) =>
+                                activeSession === 'PAGI'
+                                  ? setPagiNotes(e.target.value)
+                                  : setSiangNotes(e.target.value)
+                              }
+                              placeholder={`Tuliskan catatan utama Sesi ${activeSession === 'PAGI' ? 'Pagi' : 'Siang'}...`}
+                              className="w-full border-2 border-slate-300 focus:border-red-600 rounded-xl p-3 text-xs font-medium outline-none transition-colors"
+                            />
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                disabled={isSubmitting}
+                                onClick={handleUpdateSessionNotes}
+                                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white border-2 border-black rounded-xl text-xs py-2.5 font-bold flex items-center justify-center gap-1.5 shadow-[2px_2px_0px_#000]"
+                              >
+                                {isSubmitting ? <span>Menyimpan...</span> : <span>Perbarui Catatan Sesi Ini (Edit)</span>}
+                              </button>
+                              {activeSession === 'PAGI' && (
+                                <button
+                                  type="button"
+                                  onClick={() => setActiveSession('SIANG')}
+                                  className="flex-1 bg-orange-500 hover:bg-orange-600 text-white border-2 border-black rounded-xl text-xs py-2.5 font-black flex items-center justify-center gap-1.5 shadow-[2px_2px_0px_#000]"
+                                >
+                                  <Sunset className="w-3.5 h-3.5" />
+                                  <span>Buka Sesi Siang ☀️</span>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ) : isAllRoomsDoneInCurrentSession ? (
+                        <div className="space-y-3">
+                          <div>
+                            <label className="block text-xs font-black text-slate-900 mb-1">
+                              Catatan Utama Sesi {activeSession === 'PAGI' ? 'Pagi 🌅' : 'Siang ☀️'} (Wajib/Opsional):
+                            </label>
+                            <textarea
+                              rows={3}
+                              value={activeSession === 'PAGI' ? pagiNotes : siangNotes}
+                              onChange={(e) =>
+                                activeSession === 'PAGI'
+                                  ? setPagiNotes(e.target.value)
+                                  : setSiangNotes(e.target.value)
+                              }
+                              placeholder={`Contoh: Perangkat IT, temperatur dan kebersihan ruangan stasiun pada Sesi ${activeSession === 'PAGI' ? 'Pagi' : 'Siang'} berjalan normal...`}
+                              className="w-full border-2 border-slate-300 focus:border-red-600 rounded-xl p-3 text-xs font-medium outline-none transition-colors"
+                            />
+                            <p className="text-[10px] text-slate-500 mt-0.5">
+                              Catatan utama ini akan disematkan pada seluruh data inspeksi Sesi {activeSession === 'PAGI' ? 'Pagi' : 'Siang'}.
+                            </p>
+                          </div>
+
+                          <button
+                            type="button"
+                            disabled={isSubmitting}
+                            onClick={handleSubmitStationInspection}
+                            className="w-full bg-red-600 hover:bg-red-700 text-white border-2 border-black rounded-xl text-xs py-3 font-extrabold flex items-center justify-center gap-1.5 shadow-[2px_2px_0px_#000] active:translate-x-[1px] active:translate-y-[1px] transition-transform"
+                          >
+                            {isSubmitting ? (
+                              <span>Menyimpan ke Server...</span>
+                            ) : (
+                              <>
+                                <Send className="w-4 h-4" />
+                                <span>Submit Sesi {activeSession === 'PAGI' ? 'Pagi' : 'Siang'} & Catatan ({doneRooms.length} Ruangan)</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
                       ) : (
                         <div className="bg-slate-50 border border-slate-300 rounded-xl p-3 text-center text-xs text-slate-600 font-medium">
                           Submit sesi {activeSession === 'PAGI' ? 'pagi' : 'siang'} dapat dilakukan setelah <b>seluruh ruangan ({doneRooms.length} / {allStationRooms.length})</b> selesai diinspeksi.
@@ -1039,129 +1148,6 @@ export default function TechnicianApp() {
                       )}
                     </div>
                   </div>
-
-                  {/* 2. KARTU CATATAN UTAMA STASIUN (1 HARI = 1 CATATAN UTAMA, TERBUKA JIKA PAGI & SIANG SELESAI) */}
-                  {(() => {
-                    const isBothSessionsDone =
-                      allStationRooms.length > 0 &&
-                      pagiRooms.length >= allStationRooms.length &&
-                      siangRooms.length >= allStationRooms.length;
-
-                    return (
-                      <div className="bg-white border-2 border-black rounded-xl p-4 shadow-[3px_3px_0px_#000] space-y-3">
-                        <div className="border-b border-slate-200 pb-2">
-                          <div className="flex items-center justify-between mb-1">
-                            <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full border bg-blue-100 text-blue-900 border-blue-300">
-                              CATATAN UTAMA 1X PER HARI
-                            </span>
-                            {isStationSubmitted && (
-                              <span className="text-[10px] font-bold text-emerald-700 flex items-center gap-1">
-                                <CheckCircle2 className="w-3.5 h-3.5" />
-                                Tersimpan di Server
-                              </span>
-                            )}
-                          </div>
-                          <h3 className="font-extrabold text-sm text-slate-900">
-                            Catatan Utama Kunjungan Stasiun {currentStation?.name}
-                          </h3>
-                          <p className="text-[11px] text-slate-500 mt-0.5">
-                            1 stasiun memiliki 1 catatan utama per hari, dan baru dapat diisi setelah inspeksi Sesi Pagi & Siang telah selesai seluruhnya.
-                          </p>
-                        </div>
-
-                        {!isBothSessionsDone ? (
-                          <div className="bg-amber-50 border-2 border-dashed border-amber-400 rounded-xl p-3.5 space-y-2.5">
-                            <div className="flex items-center gap-2 text-amber-900 font-extrabold text-xs">
-                              <Lock className="w-4 h-4 text-amber-700 shrink-0" />
-                              <span>Catatan Utama Terkunci</span>
-                            </div>
-                            <p className="text-[11px] text-amber-800 font-medium leading-relaxed">
-                              Catatan utama stasiun hanya dapat diisi jika inspeksi <b>Sesi Pagi dan Sesi Siang</b> sudah diselesaikan seluruhnya (1 hari ada 1 catatan utama).
-                            </p>
-                            <div className="grid grid-cols-2 gap-2 pt-1">
-                              <div
-                                className={`p-2 rounded-lg border text-[11px] font-bold flex items-center justify-between ${
-                                  allStationRooms.length > 0 && pagiRooms.length >= allStationRooms.length
-                                    ? 'bg-emerald-100 border-emerald-400 text-emerald-900'
-                                    : 'bg-white border-amber-300 text-amber-900'
-                                }`}
-                              >
-                                <span>🌅 Sesi Pagi</span>
-                                <span>
-                                  {pagiRooms.length}/{allStationRooms.length}{' '}
-                                  {allStationRooms.length > 0 && pagiRooms.length >= allStationRooms.length ? '✓' : '⏳'}
-                                </span>
-                              </div>
-                              <div
-                                className={`p-2 rounded-lg border text-[11px] font-bold flex items-center justify-between ${
-                                  allStationRooms.length > 0 && siangRooms.length >= allStationRooms.length
-                                    ? 'bg-emerald-100 border-emerald-400 text-emerald-900'
-                                    : 'bg-white border-amber-300 text-amber-900'
-                                }`}
-                              >
-                                <span>☀️ Sesi Siang</span>
-                                <span>
-                                  {siangRooms.length}/{allStationRooms.length}{' '}
-                                  {allStationRooms.length > 0 && siangRooms.length >= allStationRooms.length ? '✓' : '⏳'}
-                                </span>
-                              </div>
-                            </div>
-                            <textarea
-                              rows={3}
-                              disabled={true}
-                              value={stationNotes}
-                              placeholder="Catatan utama stasiun akan terbuka otomatis setelah seluruh ruangan di Sesi Pagi dan Siang selesai..."
-                              className="w-full border-2 border-slate-200 bg-slate-100 text-slate-400 rounded-xl p-3 text-xs font-medium cursor-not-allowed outline-none"
-                            />
-                          </div>
-                        ) : (
-                          <div className="space-y-3">
-                            <div className="bg-emerald-50 border-2 border-emerald-400 rounded-xl p-3 flex items-start gap-2.5">
-                              <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
-                              <div className="text-xs">
-                                <div className="font-extrabold text-emerald-900">
-                                  Inspeksi Pagi & Siang Telah Selesai!
-                                </div>
-                                <div className="text-emerald-800 text-[11px]">
-                                  Silakan isi Catatan Utama Kunjungan Stasiun untuk hari ini di bawah ini.
-                                </div>
-                              </div>
-                            </div>
-
-                            <div>
-                              <textarea
-                                rows={3}
-                                value={stationNotes}
-                                onChange={(e) => setStationNotes(e.target.value)}
-                                placeholder="Contoh: Seluruh perangkat IT & transmisi berjalan normal pada kedua sesi, kondisi temperatur dan kelembapan stabil..."
-                                className="w-full border-2 border-slate-300 focus:border-red-600 rounded-xl p-3 text-xs font-medium outline-none transition-colors"
-                              />
-                            </div>
-
-                            <button
-                              type="button"
-                              disabled={isSubmitting}
-                              onClick={handleSaveDailyStationNotes}
-                              className="w-full bg-blue-600 hover:bg-blue-700 text-white border-2 border-black rounded-xl text-xs py-3 font-extrabold flex items-center justify-center gap-1.5 shadow-[2px_2px_0px_#000] active:translate-x-[1px] active:translate-y-[1px] transition-transform"
-                            >
-                              {isSubmitting ? (
-                                <span>Menyimpan ke Server...</span>
-                              ) : (
-                                <>
-                                  <Send className="w-4 h-4" />
-                                  <span>
-                                    {isStationSubmitted
-                                      ? 'Perbarui Catatan Utama Hari Ini (Edit)'
-                                      : 'Simpan Catatan Utama Hari Ini (1x Per Hari)'}
-                                  </span>
-                                </>
-                              )}
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })()}
                 </div>
               );
             })()}

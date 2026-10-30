@@ -21,26 +21,41 @@ export async function POST(request: Request) {
       );
     }
 
+    const targetSession = (session || 'PAGI').toString().toUpperCase();
+
+    if (targetSession !== 'PAGI' && targetSession !== 'SIANG') {
+      return NextResponse.json(
+        { success: false, error: 'Sesi harus bernilai PAGI atau SIANG' },
+        { status: 400 }
+      );
+    }
+
     const now = new Date();
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+    const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
 
-    // Perform database writes in transaction
+    // Perform database writes in transaction with duplicate check
     const savedInspections = await prisma.$transaction(async (tx) => {
-      // Cari jika sudah ada catatan utama stasiun yang tersimpan hari ini
-      let effectiveNote = station_notes && station_notes.trim() ? station_notes.trim() : null;
-      if (!effectiveNote) {
-        const existingToday = await tx.inspections.findFirst({
-          where: {
-            station_id,
-            inspected_at: { gte: startOfDay },
-            notes: { not: null },
+      // 1. CEK DUPLIKASI SESI: Cegah submit sesi yang sama lebih dari 1 kali dalam 1 hari
+      const existingSessionCount = await tx.inspections.count({
+        where: {
+          station_id,
+          session: targetSession,
+          inspected_at: {
+            gte: startOfDay,
+            lte: endOfDay,
           },
-          select: { notes: true },
-        });
-        if (existingToday?.notes) {
-          effectiveNote = existingToday.notes;
-        }
+        },
+      });
+
+      if (existingSessionCount > 0) {
+        throw new Error(
+          `Sesi ${targetSession} untuk stasiun ini sudah pernah disubmit hari ini! Tidak dapat mengirim sesi yang sama dua kali.`
+        );
       }
+
+      // Catatan utama untuk sesi ini
+      const effectiveNote = station_notes && station_notes.trim() ? station_notes.trim() : null;
 
       const results = [];
 
@@ -55,8 +70,6 @@ export async function POST(request: Request) {
           rInsp.humidity !== null && rInsp.humidity !== undefined && rInsp.humidity !== ''
             ? new Prisma.Decimal(rInsp.humidity)
             : null;
-
-        const targetSession = (rInsp.session || session || 'PAGI').toString().toUpperCase();
 
         const inspection = await tx.inspections.create({
           data: {
@@ -84,15 +97,16 @@ export async function POST(request: Request) {
         results.push(inspection);
       }
 
-      // Sinkronkan catatan utama ke seluruh record hari ini jika diberikan catatan baru
-      if (station_notes && station_notes.trim()) {
+      // Sinkronkan catatan utama ke seluruh record sesi ini pada hari ini
+      if (effectiveNote) {
         await tx.inspections.updateMany({
           where: {
             station_id,
-            inspected_at: { gte: startOfDay },
+            session: targetSession,
+            inspected_at: { gte: startOfDay, lte: endOfDay },
           },
           data: {
-            notes: station_notes.trim(),
+            notes: effectiveNote,
           },
         });
       }
@@ -102,7 +116,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       success: true,
-      message: 'Seluruh data inspeksi berhasil disimpan ke database',
+      message: `Seluruh data inspeksi Sesi ${targetSession} berhasil disimpan ke database`,
       savedCount: savedInspections.length,
       inspections: savedInspections,
     });
@@ -110,7 +124,7 @@ export async function POST(request: Request) {
     console.error('Error submitting inspections:', error);
     return NextResponse.json(
       { success: false, error: error.message || 'Gagal menyimpan hasil inspeksi' },
-      { status: 500 }
+      { status: 400 }
     );
   }
 }
@@ -118,7 +132,7 @@ export async function POST(request: Request) {
 export async function PATCH(request: Request) {
   try {
     const body = await request.json();
-    const { station_id, station_notes } = body;
+    const { station_id, session, station_notes } = body;
 
     if (!station_id) {
       return NextResponse.json(
@@ -127,14 +141,19 @@ export async function PATCH(request: Request) {
       );
     }
 
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+    const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+
+    const targetSession = session ? session.toString().toUpperCase() : null;
 
     const updated = await prisma.inspections.updateMany({
       where: {
         station_id,
+        ...(targetSession ? { session: targetSession } : {}),
         inspected_at: {
           gte: todayStart,
+          lte: todayEnd,
         },
       },
       data: {
