@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { QRCodeSVG } from 'qrcode.react';
-import { Printer, ShieldAlert, Thermometer, MapPin } from 'lucide-react';
+import { Printer, ShieldAlert, MapPin } from 'lucide-react';
 import { generateRoomQrPayload } from '@/lib/qr-security';
 
 interface PrintableQrStickerProps {
@@ -11,9 +11,6 @@ interface PrintableQrStickerProps {
 }
 
 export default function PrintableQrSticker({ station, room }: PrintableQrStickerProps) {
-  const isStationArea = room.name.trim().toLowerCase() === 'station area';
-  const hasClimate = !isStationArea;
-
   const qrPayload = generateRoomQrPayload({
     station_id: station.id,
     station_code: station.code,
@@ -30,7 +27,8 @@ export default function PrintableQrSticker({ station, room }: PrintableQrSticker
       {/* Visual Sticker Card */}
       <div
         id={`sticker-${room.id}`}
-        className="w-full max-w-sm brutal-card bg-white p-5 border-4 border-black relative flex flex-col items-center print:border-4 print:shadow-none print:w-full"
+        className="w-full max-w-sm brutal-card bg-white p-5 border-4 border-black relative flex flex-col items-center print:border-4 print:shadow-none print:w-full print:max-w-[100mm] print:mx-auto print:break-inside-avoid"
+        style={{ breakInside: 'avoid', pageBreakInside: 'avoid' }}
       >
         {/* Top Header Tag */}
         <div className="w-full flex items-center justify-between pb-3 border-b-3 border-black mb-4">
@@ -69,20 +67,6 @@ export default function PrintableQrSticker({ station, room }: PrintableQrSticker
             level="M"
             includeMargin={false}
           />
-        </div>
-
-        {/* Climate Indicator Badge */}
-        <div className="mt-3 w-full">
-          {hasClimate ? (
-            <div className="bg-red-50 border-2 border-red-600 p-2 text-center text-xs font-black text-red-700 flex items-center justify-center gap-1.5">
-              <Thermometer className="w-4 h-4 text-red-600 shrink-0" />
-              <span>INSPEKSI SUHU & KELEMBAPAN AKTIF</span>
-            </div>
-          ) : (
-            <div className="bg-yellow-200 border-2 border-black p-2 text-center text-xs font-black text-black flex items-center justify-center gap-1.5">
-              <span>AREA PUBLIK — TANPA SUHU & KELEMBAPAN</span>
-            </div>
-          )}
         </div>
 
         {/* Anti-cheat disclaimer */}

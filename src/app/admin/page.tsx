@@ -460,9 +460,9 @@ export default function AdminDashboard() {
 
   // 3. Authenticated Admin Dashboard
   return (
-    <div className="min-h-screen bg-[#F4F4F5] pb-16">
+    <div className="min-h-screen bg-[#F4F4F5] pb-16 print:min-h-0 print:bg-white print:p-0 print:pb-0">
       {/* Top Navigation */}
-      <header className="bg-black text-white border-b-4 border-black px-4 py-3 sticky top-0 z-30">
+      <header className="bg-black text-white border-b-4 border-black px-4 py-3 sticky top-0 z-30 no-print">
         <div className="max-w-5xl mx-auto flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <Link
@@ -518,7 +518,7 @@ export default function AdminDashboard() {
 
       {/* Notification Toast */}
       {notification && (
-        <div className="fixed top-16 right-4 left-4 sm:left-auto sm:w-96 z-50">
+        <div className="fixed top-16 right-4 left-4 sm:left-auto sm:w-96 z-50 no-print">
           <div
             className={`brutal-card p-3 flex items-center gap-2 font-bold text-xs ${
               notification.type === 'success'
@@ -536,7 +536,7 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      <main className="max-w-5xl mx-auto p-4 sm:p-6 space-y-6">
+      <main className="max-w-5xl mx-auto p-4 sm:p-6 space-y-6 no-print">
         {/* Station Selector Bar */}
         <div className="brutal-card p-4 sm:p-5 bg-white">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -1007,8 +1007,8 @@ export default function AdminDashboard() {
 
       {/* Modal QR Code Sticker Preview */}
       {activeQrModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 overflow-y-auto">
-          <div className="relative w-full max-w-md my-auto">
+        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 overflow-y-auto print:static print:inset-auto print:z-auto print:bg-transparent print:p-0 print:block print:overflow-visible">
+          <div className="relative w-full max-w-md my-auto print:w-auto print:max-w-none print:m-0">
             <button
               onClick={() => setActiveQrModal(null)}
               className="absolute -top-3 -right-3 z-10 p-2 bg-red-600 border-2 border-white text-white font-black hover:bg-black no-print"
@@ -1025,7 +1025,7 @@ export default function AdminDashboard() {
 
       {/* Modal Manage Items */}
       {activeItemModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 no-print">
           <div className="w-full max-w-lg brutal-card-lg bg-white p-5 border-4 border-black relative">
             <button
               onClick={() => setActiveItemModal(null)}
