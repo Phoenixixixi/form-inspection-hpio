@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-import { Camera, RefreshCw, X, AlertTriangle, ShieldCheck } from 'lucide-react';
+import { Camera, RefreshCw, X, AlertTriangle, ShieldCheck, ImageUp } from 'lucide-react';
 import { parseAndValidateQrPayload, QrInspectionPayload } from '@/lib/qr-security';
 
 interface QrCameraScannerProps {
@@ -19,6 +19,8 @@ export default function QrCameraScanner({
 }: QrCameraScannerProps) {
   const [scanError, setScanError] = useState<string | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
+  const [isUploading, setIsUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const scannerRef = useRef<any>(null);
   const scannerContainerId = 'hpio-qr-reader';
 
@@ -76,6 +78,45 @@ export default function QrCameraScanner({
     };
   }, [expectedStationId, onScanSuccess]);
 
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    setScanError(null);
+    setIsUploading(true);
+    try {
+      // File scan cannot run while the camera scan is active
+      const camera = scannerRef.current;
+      if (camera && camera.isScanning) {
+        await camera.stop().catch(() => {});
+      }
+
+      const { Html5Qrcode } = await import('html5-qrcode');
+      const fileScanner = new Html5Qrcode(scannerContainerId);
+      let decodedText: string;
+      try {
+        decodedText = await fileScanner.scanFile(file, false);
+      } finally {
+        try {
+          fileScanner.clear();
+        } catch {}
+      }
+
+      const result = parseAndValidateQrPayload(decodedText, expectedStationId);
+      if (result.valid && result.data) {
+        onScanSuccess(result.data);
+      } else {
+        setScanError(result.error || 'QR tidak valid');
+      }
+    } catch (err) {
+      console.error('QR file scan error:', err);
+      setScanError('QR tidak terbaca dari gambar. Pastikan gambar jelas dan berisi QR ruangan.');
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 bg-black/80 flex flex-col items-center justify-center p-4">
       <div className="w-full max-w-md brutal-card bg-white p-4 relative flex flex-col items-center">
@@ -98,7 +139,7 @@ export default function QrCameraScanner({
         {/* Info banner */}
         <div className="w-full bg-yellow-300 border-2 border-black p-2 mb-3 text-xs font-bold flex items-center gap-2">
           <ShieldCheck className="w-4 h-4 shrink-0 text-black" />
-          <span>Arahkan kamera ke stiker QR fisik di pintu/rak datacenter.</span>
+          <span>Arahkan kamera ke stiker QR fisik di pintu/rak datacenter, atau upload gambar QR.</span>
         </div>
 
         {/* Viewport Scanner */}
@@ -124,6 +165,22 @@ export default function QrCameraScanner({
 
         {/* Footer actions */}
         <div className="w-full mt-4 flex gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={handleFileChange}
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isUploading}
+            className="flex-1 brutal-btn brutal-btn-primary text-xs py-2 flex items-center justify-center gap-2 disabled:opacity-60"
+          >
+            <ImageUp className="w-4 h-4" />
+            {isUploading ? 'Membaca...' : 'Upload Gambar'}
+          </button>
           <button
             type="button"
             onClick={onClose}
